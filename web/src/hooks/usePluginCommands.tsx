@@ -86,20 +86,21 @@ export function usePluginCommands(
   }, []);
 
   const chatEnabled = chatCommand && commands.some((cmd) => cmd.fqid === chatCommand.fqid);
-  const overlay = (
-    <>
-      {pickerLinks && <PluginLinkPicker links={pickerLinks} onClose={() => setPickerLinks(null)} />}
-      {chatEnabled && (
-        <PluginChatDialog
-          key={chatCommand.fqid}
-          command={chatCommand}
-          open={chatOpen}
-          sessions={sessions}
-          onClose={() => setChatOpen(false)}
-        />
-      )}
-    </>
-  );
+  const overlay =
+    pickerLinks || chatEnabled ? (
+      <>
+        {pickerLinks && <PluginLinkPicker links={pickerLinks} onClose={() => setPickerLinks(null)} />}
+        {chatEnabled && (
+          <PluginChatDialog
+            key={chatCommand.fqid}
+            command={chatCommand}
+            open={chatOpen}
+            sessions={sessions}
+            onClose={() => setChatOpen(false)}
+          />
+        )}
+      </>
+    ) : null;
   const chatActions = (
     <>
       {commands

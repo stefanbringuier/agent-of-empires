@@ -123,7 +123,9 @@ describe("Composer plugin composer actions", () => {
           fireEvent.input(textarea, { target: { value: "/message".slice(0, length) }, inputType: "insertText" });
         }
       }
-      await waitFor(() => expect(view.getByRole("button", { name: "Send message" })).toBeEnabled());
+      await waitFor(() =>
+        expect((view.getByRole("button", { name: "Send message" }) as HTMLButtonElement).disabled).toBe(false),
+      );
       fireEvent.click(view.getByRole("button", { name: "Send message" }));
       expect(onUserCommand).toHaveBeenCalledTimes(pasted ? 0 : 1);
       view.unmount();

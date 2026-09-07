@@ -79,7 +79,7 @@ describe("PluginChatDialog", () => {
     fireEvent.change(await screen.findByLabelText("Chat draft"), { target: { value: "unfinished" } });
     view.rerender(<PluginChatDialog command={command} open={false} onClose={() => {}} />);
     view.rerender(<PluginChatDialog command={command} open onClose={() => {}} />);
-    expect(screen.getByLabelText("Chat draft")).toHaveValue("unfinished");
+    expect((screen.getByLabelText("Chat draft") as HTMLTextAreaElement).value).toBe("unfinished");
     expect(openPluginChat).toHaveBeenCalledOnce();
   });
 
@@ -92,12 +92,12 @@ describe("PluginChatDialog", () => {
     );
     render(<PluginChatDialog command={command} open onClose={() => {}} />);
     await editMessage();
-    expect(screen.getByText(/target-123/)).toHaveTextContent("/repo/one");
+    expect(screen.getByText(/target-123/).textContent).toContain("/repo/one");
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     fireEvent.click(screen.getByRole("button", { name: "Sending…" }));
     expect(sendSessionMessage).toHaveBeenCalledExactlyOnceWith("source", "target-123", " exact content\n");
     acknowledge({ status: "queued" });
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("queued"));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("queued"));
   });
 
   it("keeps the draft and disables sending after an unknown acknowledgment", async () => {
@@ -105,8 +105,10 @@ describe("PluginChatDialog", () => {
     render(<PluginChatDialog command={command} open onClose={() => {}} />);
     await editMessage();
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeDisabled());
-    expect(screen.getByLabelText("Message to recipient")).toHaveValue(" exact content\n");
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true),
+    );
+    expect((screen.getByLabelText("Message to recipient") as HTMLTextAreaElement).value).toBe(" exact content\n");
     expect(sendSessionMessage).toHaveBeenCalledOnce();
   });
 
@@ -122,6 +124,6 @@ describe("PluginChatDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(sendSessionMessage).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
-    expect(screen.getByLabelText("Chat draft")).toHaveValue("/message");
+    expect((screen.getByLabelText("Chat draft") as HTMLTextAreaElement).value).toBe("/message");
   });
 });

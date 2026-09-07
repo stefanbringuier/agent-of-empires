@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
+use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS, NON_ALPHANUMERIC};
 use reqwest::{header, StatusCode};
 use thiserror::Error;
 
@@ -361,14 +361,12 @@ impl HttpClient {
         profile: &str,
     ) -> Result<ChatSession, HttpError> {
         let url = format!(
-            "{}/api/plugins/commands/{}/chat",
+            "{}/api/plugins/commands/{}/chat?profile={}",
             self.endpoint.base_url,
-            utf8_percent_encode(fqid, PATH_SEGMENT)
+            utf8_percent_encode(fqid, PATH_SEGMENT),
+            utf8_percent_encode(profile, NON_ALPHANUMERIC)
         );
-        let res = self
-            .auth(self.http.post(&url).query(&[("profile", profile)]))
-            .send()
-            .await?;
+        let res = self.auth(self.http.post(&url)).send().await?;
         check_global_status(res)
             .await?
             .json()
@@ -384,12 +382,12 @@ impl HttpClient {
         struct Targets {
             sessions: Vec<ChatSession>,
         }
-        let url = format!("{}/api/sessions/message-targets", self.endpoint.base_url);
-        let res = self
-            .auth(self.http.get(&url))
-            .query(&[("source_session_id", source_session_id)])
-            .send()
-            .await?;
+        let url = format!(
+            "{}/api/sessions/message-targets?source_session_id={}",
+            self.endpoint.base_url,
+            utf8_percent_encode(source_session_id, NON_ALPHANUMERIC)
+        );
+        let res = self.auth(self.http.get(&url)).send().await?;
         Ok(check_global_status(res)
             .await?
             .json::<Targets>()

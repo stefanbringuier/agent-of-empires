@@ -1604,9 +1604,11 @@ impl EventStore {
                      AND json_extract(event_json, '$.UserPromptSent') IS NOT NULL
                  )",
                 params![session_id],
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0),
             )
-            .optional()?)
+            .optional()?
+            .map(u64::try_from)
+            .transpose()?)
     }
 
     /// Read the inputs the terminal-repair pass decides on. `None` when the
