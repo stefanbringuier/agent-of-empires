@@ -190,8 +190,8 @@ fn metadata(i: &Instance) -> Value {
         "view": i.view,
         "archived": i.is_archived(),
         "snoozed": i.is_snoozed(),
-        "metadata_truncated": [i.title.as_str(), session_agent(i), i.project_path.as_str(), i.group_path.as_str()]
-            .iter().any(|field| field.chars().count() > 512),
+        "metadata_truncated": ([i.title.as_str(), session_agent(i), i.project_path.as_str(), i.group_path.as_str()]
+            .iter().any(|field| field.chars().count() > 512)),
     })
 }
 
