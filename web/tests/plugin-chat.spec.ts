@@ -33,9 +33,11 @@ test("plugin chat traps focus, resizes, and restores its launcher on Escape", as
   const dialog = page.getByRole("dialog", { name: "Councilor" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("alert")).toContainText("Configure a compatible agent");
-  for (let i = 0; i < 3; i++) {
-    await page.keyboard.press("Tab");
-    expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+  const close = dialog.getByRole("button", { name: "Close" });
+  await expect(close).toBeFocused();
+  for (const key of ["Tab", "Tab", "Shift+Tab", "Shift+Tab"]) {
+    await page.keyboard.press(key);
+    await expect(close).toBeFocused();
   }
   await page.setViewportSize({ width: 390, height: 600 });
   await expect(dialog.getByRole("button", { name: "Close" })).toBeInViewport();

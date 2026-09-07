@@ -118,7 +118,31 @@ export function PluginChatDialog({
     <dialog
       ref={dialog}
       aria-label={command.title}
-      onKeyDown={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        if (event.key !== "Tab" || event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey) return;
+        const controls = Array.from(
+          event.currentTarget.querySelectorAll<HTMLElement>(
+            'button, a[href], input, select, textarea, [tabindex], [contenteditable="true"]',
+          ),
+        ).filter(
+          (element) =>
+            element.tabIndex >= 0 &&
+            !element.matches(":disabled") &&
+            !element.closest("[inert]") &&
+            element.getClientRects().length > 0 &&
+            getComputedStyle(element).visibility !== "hidden",
+        );
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        if (
+          !controls.includes(document.activeElement as HTMLElement) ||
+          document.activeElement === (event.shiftKey ? first : last)
+        ) {
+          event.preventDefault();
+          ((event.shiftKey ? last : first) ?? event.currentTarget).focus();
+        }
+      }}
       onCancel={(event) => {
         event.preventDefault();
         back();
