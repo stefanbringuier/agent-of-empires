@@ -69,6 +69,22 @@ struct PluginCommandsEnvelope {
     commands: Vec<PluginCommandView>,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ChatSession {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub project_path: String,
+    #[serde(default)]
+    pub group_path: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct MessageResult {
+    pub status: String,
+    pub message: Option<String>,
+}
+
 /// Wire mirror of the daemon's `/acp/prompt` disposition.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct PromptDispatchWire {
@@ -337,6 +353,71 @@ impl HttpClient {
         let res = self.auth(self.http.get(&url)).send().await?;
         let res = check_global_status(res).await?;
         Ok(res.json::<PluginCommandsEnvelope>().await?.commands)
+    }
+
+    pub async fn open_plugin_chat(
+        &self,
+        fqid: &str,
+        profile: &str,
+    ) -> Result<ChatSession, HttpError> {
+        let url = format!(
+            "{}/api/plugins/commands/{}/chat",
+            self.endpoint.base_url,
+            utf8_percent_encode(fqid, PATH_SEGMENT)
+        );
+        let res = self
+            .auth(self.http.post(&url).query(&[("profile", profile)]))
+            .send()
+            .await?;
+        check_global_status(res)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn message_targets(
+        &self,
+        source_session_id: &str,
+    ) -> Result<Vec<ChatSession>, HttpError> {
+        #[derive(serde::Deserialize)]
+        struct Targets {
+            sessions: Vec<ChatSession>,
+        }
+        let url = format!("{}/api/sessions/message-targets", self.endpoint.base_url);
+        let res = self
+            .auth(self.http.get(&url))
+            .query(&[("source_session_id", source_session_id)])
+            .send()
+            .await?;
+        Ok(check_global_status(res)
+            .await?
+            .json::<Targets>()
+            .await?
+            .sessions)
+    }
+
+    pub async fn send_session_message(
+        &self,
+        source_session_id: &str,
+        target_id: &str,
+        text: &str,
+    ) -> Result<MessageResult, HttpError> {
+        let url = format!(
+            "{}/api/sessions/{}/message",
+            self.endpoint.base_url,
+            utf8_percent_encode(target_id, PATH_SEGMENT)
+        );
+        let res = self
+            .auth(self.http.post(&url))
+            .json(&serde_json::json!({"source_session_id": source_session_id, "text": text}))
+            .send()
+            .await?;
+        check_global_status(res)
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
     }
 
     /// `POST /api/plugins/commands/{fqid}/invoke`. Dispatch an action-less

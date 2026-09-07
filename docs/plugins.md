@@ -51,6 +51,27 @@ first-party plugins land as each piece is verified.
 
 ## Installing external plugins
 
+Councilor is an optional plugin in this source tree. Install it with
+`aoe plugin install ./plugins/councilor`, grant its declared capabilities,
+and run `aoe serve`. Open **Councilor** in the web dashboard or press its
+configurable `Ctrl+O` binding from the TUI home screen. The first open creates
+one saved scratch conversation per profile using the configured ACP agent;
+plugin settings provide agent/model overrides for creation, and the web chat
+retains its normal selectors. A missing adapter must be configured first.
+The TUI's selected profile must match the connected daemon's profile.
+
+Councilor finds sessions through metadata and summarizes bounded recent
+activity. Type `/message` directly to pick a recipient, edit the exact message,
+and confirm Send. A sent or queued result confirms delivery or acceptance,
+not execution. An unknown acknowledgment must be checked at the recipient
+before trying again.
+
+The read bridge is read-only, but the inherited agent can still have filesystem,
+shell, network, and other MCP tools under its existing approval policy. Scratch
+is a working directory choice, not isolation. Container agents are currently
+unsupported by this bridge and fail without weakening their sandbox settings.
+Disabling the plugin stops its active resources and retains the saved conversation.
+
 External plugins are community code that you install at your own risk. Install,
 update, and uninstall from the CLI (`aoe plugin`) or from the web dashboard's
 Plugins settings (Marketplace searches the `aoe-plugin` GitHub topic; each

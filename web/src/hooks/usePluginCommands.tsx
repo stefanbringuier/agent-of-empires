@@ -10,6 +10,8 @@ import {
   type CommandLink,
 } from "../lib/pluginCommands";
 import { PluginLinkPicker } from "../components/plugin/PluginLinkPicker";
+import { PluginChatDialog } from "../components/plugin/PluginChatDialog";
+import type { SessionResponse } from "../lib/types";
 
 /** Surfaces active plugin commands as palette actions and binds their declared
  *  keybinds. An `open-ui-link` chord opens the active session's PR href (or a
@@ -20,9 +22,12 @@ import { PluginLinkPicker } from "../components/plugin/PluginLinkPicker";
 export function usePluginCommands(
   entries: PluginUiEntry[],
   activeSessionId: string | null,
-): { actions: CommandAction[]; overlay: ReactElement | null } {
+  sessions: SessionResponse[] = [],
+): { actions: CommandAction[]; overlay: ReactElement | null; chatActions: ReactElement } {
   const [commands, setCommands] = useState<PluginCommand[]>([]);
   const [pickerLinks, setPickerLinks] = useState<CommandLink[] | null>(null);
+  const [chatCommand, setChatCommand] = useState<PluginCommand | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -32,10 +37,24 @@ export function usePluginCommands(
     return () => {
       alive = false;
     };
-  }, []);
+  }, [entries]);
 
   const actions = useMemo(
-    () => buildPluginCommandActions(commands, entries, activeSessionId),
+    () => [
+      ...buildPluginCommandActions(commands, entries, activeSessionId),
+      ...commands
+        .filter((cmd) => cmd.action?.kind === "open-chat")
+        .map((cmd): CommandAction => ({
+          id: `plugin:${cmd.fqid}`,
+          title: cmd.title,
+          group: "Actions",
+          keywords: ["plugin", cmd.plugin_id, cmd.id],
+          perform: () => {
+            setChatCommand(cmd);
+            setChatOpen(true);
+          },
+        })),
+    ],
     [commands, entries, activeSessionId],
   );
 
@@ -66,7 +85,40 @@ export function usePluginCommands(
     return () => document.removeEventListener("keydown", handler);
   }, []);
 
-  const overlay = pickerLinks ? <PluginLinkPicker links={pickerLinks} onClose={() => setPickerLinks(null)} /> : null;
+  const chatEnabled = chatCommand && commands.some((cmd) => cmd.fqid === chatCommand.fqid);
+  const overlay = (
+    <>
+      {pickerLinks && <PluginLinkPicker links={pickerLinks} onClose={() => setPickerLinks(null)} />}
+      {chatEnabled && (
+        <PluginChatDialog
+          key={chatCommand.fqid}
+          command={chatCommand}
+          open={chatOpen}
+          sessions={sessions}
+          onClose={() => setChatOpen(false)}
+        />
+      )}
+    </>
+  );
+  const chatActions = (
+    <>
+      {commands
+        .filter((cmd) => cmd.action?.kind === "open-chat")
+        .map((cmd) => (
+          <button
+            key={cmd.fqid}
+            type="button"
+            className="rounded-md border border-surface-700 bg-surface-800 px-3 py-1 text-sm text-text-primary hover:bg-surface-700"
+            onClick={() => {
+              setChatCommand(cmd);
+              setChatOpen(true);
+            }}
+          >
+            {cmd.title}
+          </button>
+        ))}
+    </>
+  );
 
-  return { actions, overlay };
+  return { actions, overlay, chatActions };
 }

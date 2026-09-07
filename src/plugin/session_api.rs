@@ -283,6 +283,36 @@ async fn admit_and_create(
     plugin_id: &str,
     req: SessionsCreateRequest,
 ) -> Result<SessionsCreateResponse, DispatchError> {
+    let chat_plugin = crate::plugin::registry()
+        .get(plugin_id)
+        .is_some_and(|plugin| {
+            plugin.manifest.commands.iter().any(|command| {
+                matches!(command.action, Some(aoe_plugin_api::ClientAction::OpenChat))
+            })
+        });
+    if chat_plugin {
+        if req.sandbox {
+            return Err(DispatchError::with_kind(
+                codes::FAILED_PRECONDITION,
+                "chat_bridge_unavailable",
+                "The session read bridge is not available inside containers; use a profile configured for host agents",
+            ));
+        }
+        let registry = crate::acp::AgentRegistry::with_defaults();
+        if !registry.get(&req.agent_id).is_some_and(|agent| {
+            if let Some(relative) = agent.command.strip_prefix("${aoe_data_dir}/") {
+                crate::session::get_app_dir().is_ok_and(|dir| dir.join(relative).is_file())
+            } else {
+                !agent.command.contains("${") && crate::cli::acp::command_present(&agent.command)
+            }
+        }) {
+            return Err(DispatchError::with_kind(
+                codes::FAILED_PRECONDITION,
+                "agent_unavailable",
+                "Configure an installed ACP-compatible agent before opening chat",
+            ));
+        }
+    }
     let catalog = load_catalog().await;
     let entry = catalog.agents.get(&req.agent_id);
 

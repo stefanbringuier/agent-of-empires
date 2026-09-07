@@ -635,7 +635,14 @@ fn resolve_mcp_layers(
             "forwarding MCP servers"
         );
     }
-    crate::acp::mcp_config::project_servers_to_acp(merged.into_iter().map(|s| s.def).collect())
+    let mut servers =
+        crate::acp::mcp_config::project_servers_to_acp(merged.into_iter().map(|s| s.def).collect());
+    if let Some(bridge) =
+        crate::plugin::read_bridge::server(profile.unwrap_or("default"), session_id)
+    {
+        servers.push(bridge);
+    }
+    servers
 }
 
 /// Overlay an instance command override onto a resolved `AgentSpec`.

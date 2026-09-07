@@ -72,6 +72,11 @@ pub(super) fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/sessions/{id}/ensure", post(api::ensure_session))
         .route("/api/sessions/{id}/send", post(api::send_message))
+        .route("/api/sessions/message-targets", get(api::message_targets))
+        .route(
+            "/api/sessions/{id}/message",
+            post(api::submit_session_message),
+        )
         .route(
             "/api/sessions/{id}/paste-image",
             // A base64 screenshot blows past the global 1 MiB cap. 8 MiB
@@ -175,6 +180,10 @@ pub(super) fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/plugins", get(api::list_plugins))
         .route("/api/plugins/{id}/icon", get(api::serve_plugin_icon))
         .route("/api/plugins/commands", get(api::plugin_commands))
+        .route(
+            "/api/plugins/commands/{fqid}/chat",
+            post(api::open_plugin_chat),
+        )
         .route(
             "/api/plugins/commands/{fqid}/invoke",
             post(api::invoke_plugin_command),

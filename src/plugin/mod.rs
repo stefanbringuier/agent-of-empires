@@ -19,8 +19,10 @@ pub(crate) mod automation_policy;
 pub mod host;
 pub mod host_api;
 pub mod protocol;
+pub mod read_bridge;
 pub mod sandbox;
 pub mod session_api;
+mod session_reads;
 pub mod ui_state;
 
 pub mod launch;
@@ -36,6 +38,13 @@ pub fn plugins_dir() -> anyhow::Result<PathBuf> {
 
 pub use registry::{LoadedPlugin, PluginRegistry};
 pub use view::PluginView;
+
+pub(crate) fn session_owner_active(instance: &crate::session::Instance) -> bool {
+    instance
+        .created_by_plugin
+        .as_deref()
+        .is_none_or(|owner| registry().get(owner).is_some_and(LoadedPlugin::active))
+}
 
 /// Lock recovery for the process-wide registry slot: a panic elsewhere must
 /// not poison it and take a TUI redraw / tokio task down on the next access.

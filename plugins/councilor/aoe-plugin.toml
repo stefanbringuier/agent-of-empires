@@ -1,0 +1,41 @@
+id = "dev.aoe.councilor"
+name = "Councilor"
+version = "0.1.0"
+api_version = 14
+aoe_version = ">=1.15.3, <2.0.0"
+description = "Find and summarize AoE sessions using your configured agent."
+capabilities = ["runtime.worker", "acp.capabilities.read", "session.read", "session.create", "session.prompt"]
+
+[[commands]]
+id = "open"
+title = "Councilor"
+description = "Open the Councilor conversation."
+action = { kind = "open-chat" }
+
+[[keybinds]]
+command = "open"
+key = "Ctrl+O"
+
+[[settings]]
+key = "agent_id"
+label = "Agent override"
+description = "Leave empty to inherit the configured compatible agent. Applies to new Councilor sessions."
+type = "dynamic_select"
+option_source = "acp.agents"
+default = ""
+
+[[settings]]
+key = "model_id"
+label = "Model override"
+description = "Leave empty to inherit the agent default. Applies to new Councilor sessions."
+type = "dynamic_select"
+option_source = "acp.models"
+depends_on = ["agent_id"]
+default = ""
+
+[runtime]
+kind = "command"
+command = [".aoe-build/release/aoe-councilor"]
+
+[[runtime.build]]
+command = ["cargo", "build", "--locked", "--release", "--target-dir", ".aoe-build"]

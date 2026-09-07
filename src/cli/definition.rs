@@ -220,6 +220,8 @@ pub enum Commands {
     /// `aoe serve --stop`. Hidden from help.
     #[command(name = "__acp-runner", hide = true)]
     AcpRunner(Box<crate::process::runner::AcpRunnerArgs>),
+    #[command(name = "__plugin-read-bridge", hide = true)]
+    PluginReadBridge { session_id: String },
 
     /// Internal: extract Claude's `session_id` from a hook stdin payload
     /// and write it to the sidecar file. Spawned by the host-side
@@ -333,6 +335,7 @@ pub fn command_name(command: &Commands) -> Option<&'static str> {
         Commands::Acp { .. } => "acp",
         // Internal, machine-spawned commands: never a user action, never counted.
         Commands::AcpRunner(_) => return None,
+        Commands::PluginReadBridge { .. } => return None,
         Commands::ExtractSessionId(_) => return None,
         Commands::Uninstall(_) => "uninstall",
         Commands::Update(_) => "update",

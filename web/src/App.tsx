@@ -1713,10 +1713,11 @@ function AppContent({
     readOnly: !!serverAbout?.read_only,
     onOpenSettingsTab: openSettingsTab,
   });
-  const { actions: pluginCommandActions, overlay: pluginLinkPicker } = usePluginCommands(
-    pluginUiEntries,
-    activeSessionId,
-  );
+  const {
+    actions: pluginCommandActions,
+    overlay: pluginLinkPicker,
+    chatActions: pluginChatActions,
+  } = usePluginCommands(pluginUiEntries, activeSessionId, sessions);
 
   // Conversation-content search for the palette (#2515). paletteQuery is
   // declared above (near showPalette) so the keyboard handlers can clear it
@@ -2371,6 +2372,7 @@ function AppContent({
         />
 
         {pluginLinkPicker}
+        <div className="fixed bottom-4 right-4 z-40 flex gap-2">{pluginChatActions}</div>
 
         {snoozeTargetId && (
           <SnoozeModal

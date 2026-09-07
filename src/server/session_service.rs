@@ -285,6 +285,24 @@ pub struct AcpDeps {
 }
 
 impl SessionService {
+    pub(crate) async fn stop_inactive_plugin_sessions(&self) {
+        let ids: Vec<_> = self
+            .instances
+            .read()
+            .await
+            .iter()
+            .filter(|session| !crate::plugin::session_owner_active(session))
+            .map(|session| session.id.clone())
+            .collect();
+        for id in ids {
+            if self.acp_supervisor.is_running(&id).await {
+                if let Err(error) = self.acp_supervisor.shutdown(&id).await {
+                    tracing::warn!(target: "plugin.host", session = %id, "Stopping disabled plugin session: {error}");
+                }
+            }
+        }
+    }
+
     pub fn new(
         instances: Arc<RwLock<Vec<Instance>>>,
         instance_locks: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,

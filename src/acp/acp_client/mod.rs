@@ -51,8 +51,8 @@ pub use errors::{AcpError, IncompatibleAgentError};
 pub use reset::ResetSessionOutcome;
 pub use resolve_command::{resolve_agent_command, ResolvedAgentCommand};
 pub use session_sandbox::SessionSandbox;
-pub(crate) use spawn::host_environment_denyreason;
 pub use spawn::SpawnConfig;
+pub(crate) use spawn::{host_environment_denyreason, scrub_stderr_secrets};
 
 use crate::acp::agent_compat::ExpectedAgent;
 use crate::acp::agent_profiles;

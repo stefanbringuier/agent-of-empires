@@ -173,7 +173,7 @@ pub(crate) fn host_environment_denyreason(key: &str) -> Option<&'static str> {
 /// prints "auth failed: api_key=sk-ant-..."; will not catch a hand-rolled
 /// secret with no recognisable shape. Users sharing logs in bug reports
 /// should still scan them; see docs/acp.md#sharing-debug-logs.
-pub(super) fn scrub_stderr_secrets(line: &str) -> std::borrow::Cow<'_, str> {
+pub(crate) fn scrub_stderr_secrets(line: &str) -> std::borrow::Cow<'_, str> {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
