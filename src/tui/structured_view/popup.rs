@@ -29,8 +29,11 @@ impl ChatStartup {
             let result = async {
                 let endpoint = crate::acp::client::require_daemon().await?;
                 let http = crate::acp::client::HttpClient::new(endpoint.clone())?;
+                let resolved_profile = crate::session::config::effective_profile(
+                    chat_profile.as_deref().unwrap_or(""),
+                );
                 let session = http
-                    .open_plugin_chat(&chat_command, chat_profile.as_deref().unwrap_or("default"))
+                    .open_plugin_chat(&chat_command, &resolved_profile)
                     .await?;
                 let view = EmbeddedView::connect(endpoint, &session.id).await?;
                 Ok(ChatPopup::new(chat_command, chat_title, chat_profile, view))

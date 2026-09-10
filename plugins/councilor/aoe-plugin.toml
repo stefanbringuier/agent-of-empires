@@ -14,7 +14,7 @@ action = { kind = "open-chat" }
 
 [[keybinds]]
 command = "open"
-key = "Ctrl+O"
+key = "Ctrl+Y"
 
 [[settings]]
 key = "agent_id"

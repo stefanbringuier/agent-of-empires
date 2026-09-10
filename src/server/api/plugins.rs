@@ -203,17 +203,18 @@ pub async fn open_plugin_chat(
     if let Some(response) = super::cityhall_block(&state) {
         return response;
     }
+    let profile = crate::session::config::effective_profile(&state.profile);
     if query
         .profile
         .as_ref()
-        .is_some_and(|profile| profile != &state.profile)
+        .is_some_and(|requested| requested != &profile)
     {
         return error_response(
             StatusCode::CONFLICT,
             "profile_mismatch",
             format!(
                 "The daemon serves profile {}. Connect to a daemon serving the selected profile.",
-                state.profile
+                profile
             ),
         );
     }
@@ -242,10 +243,10 @@ pub async fn open_plugin_chat(
             "Start the daemon with aoe serve".into(),
         );
     };
-    let config = crate::session::resolve_config_or_warn(&state.profile);
+    let config = crate::session::resolve_config_or_warn(&profile);
     let params = json!({
         "command": fqid,
-        "profile": state.profile,
+        "profile": profile,
         "agent_id": config.acp.resolved_default_agent(),
         "sandbox": config.sandbox.enabled_by_default,
     });
@@ -266,7 +267,7 @@ pub async fn open_plugin_chat(
     let session = instances.iter().find(|session| {
         Some(session.id.as_str()) == result["session_id"].as_str()
             && session.created_by_plugin.as_deref() == Some(&plugin_id)
-            && session.effective_profile() == state.profile
+            && session.effective_profile() == profile
             && session.is_structured()
             && !session.is_trashed()
     });
