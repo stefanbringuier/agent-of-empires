@@ -110,6 +110,16 @@ jobs:
       - name: Cargo test (default features, everything except e2e)
         if: matrix.leg == 'core-rest'
         run: cargo test
+      - name: Councilor installed worker contract
+        if: matrix.leg == 'core-rest'
+        run: |
+          plugin_dir=$(mktemp -d)
+          cp -R plugins/councilor/. "$plugin_dir/"
+          cargo test --locked --manifest-path "$plugin_dir/Cargo.toml" --target-dir target/councilor
+          cargo clippy --locked --manifest-path "$plugin_dir/Cargo.toml" --target-dir target/councilor -- -D warnings
+      - name: Plugin API contract
+        if: matrix.leg == 'core-rest'
+        run: cargo test -p aoe-plugin-api
       # bare-core: the three no-default-features feature corners. `web` is not
       # a default feature, so these runs are also the dashboard-off compile
       # gate that keeps the `cfg(feature = "web")` sites from rotting.

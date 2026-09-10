@@ -402,6 +402,7 @@ pub(super) const CITYHALL_MUTATION_DENY: &[(&str, &str)] = &[
     // Terminal surface.
     ("POST", "/api/sessions/{id}/ensure"),
     ("POST", "/api/sessions/{id}/send"),
+    ("POST", "/api/sessions/{id}/message"),
     ("POST", "/api/sessions/{id}/terminal"),
     ("DELETE", "/api/sessions/{id}/terminal"),
     ("POST", "/api/sessions/{id}/container-terminal"),
@@ -440,6 +441,7 @@ pub(super) const CITYHALL_MUTATION_DENY: &[(&str, &str)] = &[
     ("POST", "/api/plugins/{id}/update/apply"),
     ("POST", "/api/plugins/{id}/update/dismiss"),
     ("POST", "/api/plugins/commands/{fqid}/invoke"),
+    ("POST", "/api/plugins/commands/{fqid}/chat"),
     // ACP agent / worker lifecycle + config.
     ("DELETE", "/api/sessions/{id}/acp"),
     ("POST", "/api/sessions/{id}/acp/config-option"),

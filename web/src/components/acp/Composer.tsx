@@ -278,6 +278,7 @@ function fileToBase64(file: File): Promise<string> {
 }
 
 interface Props {
+  onUserCommand?: (text: string) => boolean;
   sessionId: string;
   /** Registry key of the agent the session currently runs. Drives the
    *  "Switch agent" control's filtered target list and handoff copy. */
@@ -366,8 +367,10 @@ export function Composer({
   primerPrefill,
   queuedPrompts,
   editQueuedPrompt,
+  onUserCommand,
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const typedDraft = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { files } = useFilesIndex(sessionId);
 
@@ -662,6 +665,11 @@ export function Composer({
   // runtime's `onNew`, which reads the same staged attachments from
   // AcpRuntime. See #1000 / #965.
   const submitComposer = useCallback(() => {
+    const text = composerRuntime.getState().text;
+    if (typedDraft.current === text && pendingAttachments.length === 0 && onUserCommand?.(text)) {
+      return;
+    }
+    typedDraft.current = null;
     const cur = recallRef.current;
     if (cur) {
       applyRecall(null);
@@ -689,6 +697,8 @@ export function Composer({
     queuedPrompts,
     editQueuedPrompt,
     applyRecall,
+    onUserCommand,
+    pendingAttachments.length,
   ]);
   const getPluginComposerSnapshot = useCallback(() => {
     const ta = taRef.current;
@@ -806,6 +816,15 @@ export function Composer({
   // Auto-grow the textarea up to ~6 visible lines.
   const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
     const el = e.currentTarget;
+    const inputType = (e.nativeEvent as InputEvent).inputType;
+    if (
+      (inputType === "insertText" || inputType === "deleteContentBackward" || inputType === "deleteContentForward") &&
+      (typedDraft.current !== null || el.value === "/")
+    ) {
+      typedDraft.current = el.value;
+    } else {
+      typedDraft.current = null;
+    }
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   };
@@ -1041,6 +1060,7 @@ export function Composer({
                 dictationGuard.observeInputType(ne.inputType, Date.now());
               }}
               onChange={(e) => {
+                if (!e.currentTarget.value) typedDraft.current = null;
                 // Suppress assistant-ui's controlled-input flush while
                 // an iOS dictation burst is active (#1431). Radix's
                 // `composeEventHandlers` (used by ComposerPrimitive.Input)
@@ -1120,6 +1140,21 @@ export function Composer({
                   },
                   { isMobile, turnActive },
                 );
+                if (
+                  onUserCommand &&
+                  !isMobile &&
+                  e.key === "Enter" &&
+                  !e.shiftKey &&
+                  !e.altKey &&
+                  !e.ctrlKey &&
+                  !e.metaKey &&
+                  !e.nativeEvent.isComposing
+                ) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  submitComposer();
+                  return;
+                }
                 if (action === "default") return;
                 // action === "send"
                 e.preventDefault();
@@ -1127,6 +1162,7 @@ export function Composer({
                 submitComposer();
               }}
               onPaste={(e) => {
+                typedDraft.current = null;
                 // Cmd/Ctrl+V of an image (screenshot) lands here as a
                 // clipboard file item. Capture supported files and stage
                 // them; let text paste fall through untouched. See #965.

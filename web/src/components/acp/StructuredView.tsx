@@ -89,6 +89,7 @@ import type {
 import { pickMemoryRecall } from "../../lib/memoryRecall";
 
 interface Props {
+  onUserCommand?: (text: string) => boolean;
   sessionId: string;
   /** Structured view worker lifecycle pulled from `SessionResponse.acp_worker_state`
    *  (REST-poll-driven, ~3s cadence). Drives the `WorkerResumingBanner`
@@ -173,6 +174,7 @@ export function StructuredView(props: Props) {
     fileRefSession,
     onOpenAgentsPane,
     isSandboxed,
+    onUserCommand,
   } = props;
   // Folds rows above the most recent `/clear` divider out of the
   // thread by default; the disclosure banner toggles this. Lives on
@@ -210,6 +212,7 @@ export function StructuredView(props: Props) {
                   trashedAt={trashedAt}
                   onRestore={onRestore}
                   isSandboxed={isSandboxed}
+                  onUserCommand={onUserCommand}
                   {...ctx}
                 />
               </BackgroundAgentsContext.Provider>
@@ -327,7 +330,9 @@ function AcpChrome({
   loadEarlierHistory,
   loadingEarlierHistory,
   isSandboxed,
+  onUserCommand,
 }: AcpContext & {
+  onUserCommand?: (text: string) => boolean;
   sessionId: string;
   acpWorkerState: "absent" | "resuming" | "running";
   acpAgent: string | null;
@@ -959,6 +964,7 @@ function AcpChrome({
                   that must not vanish behind a collapse the user forgot about. */}
               <CollapsibleRegion id="conversation-composer" collapsed={composerCollapsible && composerCollapsed}>
                 <Composer
+                  onUserCommand={onUserCommand}
                   sessionId={sessionId}
                   currentAgent={state.agent ?? acpAgent}
                   availableModes={state.availableModes}

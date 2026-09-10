@@ -50,6 +50,7 @@
                 ./acp-worker/aoe-agent/package.json
                 ./assets
                 ./docker
+                ./plugins/councilor/bootstrap-v1.md
               ];
             };
             strictDeps = true;

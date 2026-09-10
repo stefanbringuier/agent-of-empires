@@ -137,6 +137,22 @@ impl SendMessageDialog {
         self.text_area.insert_str(text);
     }
 
+    pub fn handle_exact_key(&mut self, key: KeyEvent) -> DialogResult<String> {
+        if key.code == KeyCode::Enter
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
+        {
+            let text = self.get_text();
+            return if text.trim().is_empty() {
+                DialogResult::Continue
+            } else {
+                DialogResult::Submit(text)
+            };
+        }
+        self.handle_key(key)
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         // 2 for borders + 1 per content line, min 3 (single line), max 12,
         // capped to viewport so the popover never paints under the iOS soft
@@ -177,6 +193,10 @@ impl SendMessageDialog {
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
+        self.render_body(frame, inner, theme);
+    }
+
+    pub fn render_body(&self, frame: &mut Frame, inner: Rect, theme: &Theme) {
         let mut text_area_clone = self.text_area.clone();
         text_area_clone.set_style(Style::default().fg(theme.text));
         text_area_clone.set_cursor_style(Style::default().fg(theme.background).bg(theme.accent));

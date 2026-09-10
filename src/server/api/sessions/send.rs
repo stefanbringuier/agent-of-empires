@@ -31,6 +31,7 @@ enum SendKeysError {
     Transient(Status),
     StructuredView,
     Tmux(anyhow::Error),
+    Ineligible,
 }
 
 type SendKeysResult =
@@ -44,6 +45,18 @@ pub async fn send_message(
     if state.read_only {
         return crate::server::api::read_only_response();
     }
+    send_message_inner(state, id, req, None).await
+}
+
+async fn send_message_inner(
+    state: Arc<AppState>,
+    id: String,
+    req: Result<Json<SendMessageRequest>, axum::extract::rejection::JsonRejection>,
+    source_session_id: Option<&str>,
+) -> axum::response::Response {
+    if state.read_only {
+        return crate::server::api::read_only_response();
+    }
     // Terminal keystroke injection: CityHall sessions are structured-view only
     // (the composer drives the agent via the ACP prompt route), so close this
     // explicitly rather than leaning on the downstream StructuredView error.
@@ -51,10 +64,9 @@ pub async fn send_message(
         return resp;
     }
     let Json(req) = match req {
-        Ok(j) => j,
-        Err(rej) => return rej.into_response(),
+        Ok(req) => req,
+        Err(rejection) => return rejection.into_response(),
     };
-
     if req.message.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -71,6 +83,11 @@ pub async fn send_message(
     let _guard = inst_lock.lock().await;
 
     let instances = state.instances.read().await;
+    if let Some(source) = source_session_id {
+        if let Err(message) = authorize_message(&state.profile, &instances, source, &id) {
+            return (StatusCode::CONFLICT, message).into_response();
+        }
+    }
     let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
         return (
             StatusCode::NOT_FOUND,
@@ -79,11 +96,19 @@ pub async fn send_message(
             .into_response();
     };
     drop(instances);
+    if source_session_id.is_some() && instance.is_structured() {
+        return (
+            StatusCode::CONFLICT,
+            "Recipient view changed; select it again",
+        )
+            .into_response();
+    }
 
     let sync_base = instance.clone();
     let tool = instance.tool.clone();
     let message = req.message;
     let revive = req.revive;
+    let guarded_message = source_session_id.is_some();
     let send_result = tokio::task::spawn_blocking(move || -> SendKeysResult {
         // Revive the pane before sending. Without this, a send to a dead
         // pane silently writes keystrokes to a corpse with no agent.
@@ -143,6 +168,26 @@ pub async fn send_message(
         };
         if !tmux_session.exists() {
             return Err(Box::new((inst_owned, outcome, SendKeysError::NotRunning)));
+        }
+        if guarded_message {
+            let pane = crate::tmux::batch_pane_metadata()
+                .ok()
+                .and_then(|mut panes| panes.remove(tmux_session.name()));
+            let Some(pane) = pane else {
+                return Err(Box::new((inst_owned, outcome, SendKeysError::Ineligible)));
+            };
+            inst_owned.update_status_once(Some(&pane), Some(tmux_session.name()));
+            if !message_target_eligible(&inst_owned)
+                || pane.pane_dead
+                || pane.pane_current_command.as_deref().is_none_or(|command| {
+                    crate::tmux::utils::is_pane_running_shell_command(
+                        command,
+                        pane.pane_start_command_is_protected,
+                    )
+                })
+            {
+                return Err(Box::new((inst_owned, outcome, SendKeysError::Ineligible)));
+            }
         }
         let delay = crate::agents::send_keys_enter_delay(&tool);
         if let Err(e) = tmux_session.send_keys_with_delay(&message, delay) {
@@ -207,6 +252,11 @@ pub async fn send_message(
             // acquire, last_start_time, etc.). Sync only when work happened.
             let did_work = !matches!(outcome, EnsureReadyOutcome::AlreadyAlive);
             match send_err {
+                SendKeysError::Ineligible => (
+                    StatusCode::CONFLICT,
+                    "Recipient is busy, stopped, or no longer running a supported agent",
+                )
+                    .into_response(),
                 SendKeysError::NotRunning => {
                     // External kill or remain-on-exit-off crash can race
                     // ensure_pane_ready's Alive decision against the
@@ -291,6 +341,224 @@ pub async fn send_message(
                 .into_response()
         }
     }
+}
+
+#[derive(Deserialize)]
+pub struct MessageTargetsQuery {
+    pub source_session_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct SessionMessageRequest {
+    pub source_session_id: String,
+    pub text: String,
+}
+
+fn message_target_eligible(instance: &Instance) -> bool {
+    !instance.is_trashed()
+        && !instance.is_archived()
+        && !instance.is_snoozed()
+        && if instance.is_structured() {
+            matches!(
+                instance.status,
+                Status::Idle | Status::Waiting | Status::Running
+            )
+        } else {
+            crate::agents::get_agent(&instance.tool).is_some()
+                && matches!(instance.status, Status::Idle | Status::Waiting)
+        }
+}
+
+fn message_source_authorized(profile: &str, instances: &[Instance], source: &str) -> bool {
+    instances.iter().any(|instance| {
+        instance.id == source
+            && instance.effective_profile() == profile
+            && crate::plugin::read_bridge::chat_owner(instance).is_some()
+    })
+}
+
+pub(crate) fn authorize_message(
+    profile: &str,
+    instances: &[Instance],
+    source: &str,
+    target: &str,
+) -> Result<(), &'static str> {
+    if !message_source_authorized(profile, instances, source) {
+        return Err("Source chat is unavailable or unauthorized in this profile");
+    }
+    if source == target {
+        return Err("Select a different recipient");
+    }
+    let target = instances
+        .iter()
+        .find(|instance| instance.id == target)
+        .ok_or("Recipient no longer exists")?;
+    if target.effective_profile() != profile || !message_target_eligible(target) {
+        return Err("Recipient is unavailable, busy, or unauthorized in this profile");
+    }
+    Ok(())
+}
+
+pub async fn message_targets(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<MessageTargetsQuery>,
+) -> axum::response::Response {
+    if state.read_only {
+        return crate::server::api::read_only_response();
+    }
+    if let Some(response) = crate::server::api::cityhall_block(&state) {
+        return response;
+    }
+    let instances = state.instances.read().await;
+    if !message_source_authorized(&state.profile, &instances, &query.source_session_id) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Source chat is unavailable or unauthorized",
+        )
+            .into_response();
+    }
+    let targets: Vec<_> = instances
+        .iter()
+        .filter(|instance| {
+            instance.id != query.source_session_id
+                && instance.effective_profile() == state.profile
+                && message_target_eligible(instance)
+        })
+        .cloned()
+        .collect();
+    drop(instances);
+    match tokio::task::spawn_blocking(move || {
+        let fullscreen = crate::claude_settings::read_tui_fullscreen();
+        let panes = crate::tmux::batch_pane_metadata().unwrap_or_default();
+        targets
+            .into_iter()
+            .filter_map(|instance| {
+                if !instance.is_structured() {
+                    let tmux = instance.tmux_session().ok()?;
+                    let pane = panes.get(tmux.name())?;
+                    if pane.pane_dead
+                        || pane.pane_current_command.as_deref().is_none_or(|command| {
+                            crate::tmux::utils::is_pane_running_shell_command(
+                                command,
+                                pane.pane_start_command_is_protected,
+                            )
+                        })
+                    {
+                        return None;
+                    }
+                }
+                Some(SessionResponse::from_instance(&instance, fullscreen))
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    {
+        Ok(sessions) => Json(serde_json::json!({"sessions": sessions})).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Recipient inventory unavailable",
+        )
+            .into_response(),
+    }
+}
+
+pub async fn submit_session_message(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    req: Result<Json<SessionMessageRequest>, axum::extract::rejection::JsonRejection>,
+) -> axum::response::Response {
+    if state.read_only || state.cityhall_mode {
+        return message_result("error", "Cross-session messaging is disabled in this view");
+    }
+    let Json(req) = match req {
+        Ok(req) => req,
+        Err(rejection) => return message_result("error", &rejection.to_string()),
+    };
+    if req.text.trim().is_empty() {
+        return message_result("error", "Message is empty");
+    }
+    let structured = {
+        let instances = state.instances.read().await;
+        if let Err(message) =
+            authorize_message(&state.profile, &instances, &req.source_session_id, &id)
+        {
+            return message_result("error", message);
+        }
+        instances
+            .iter()
+            .any(|instance| instance.id == id && instance.is_structured())
+    };
+    let response = if structured {
+        super::super::acp::acp_prompt_inner(
+            state,
+            id,
+            Ok(Json(crate::acp::protocol::PromptRequest {
+                text: req.text,
+                attachments: Vec::new(),
+                prompt_id: None,
+            })),
+            Some(&req.source_session_id),
+        )
+        .await
+    } else {
+        send_message_inner(
+            state,
+            id,
+            Ok(Json(SendMessageRequest {
+                message: req.text,
+                revive: false,
+            })),
+            Some(&req.source_session_id),
+        )
+        .await
+    };
+    message_acknowledgment(response).await
+}
+
+async fn message_acknowledgment(response: axum::response::Response) -> axum::response::Response {
+    let code = response.status();
+    let body = match axum::body::to_bytes(response.into_body(), 16_384).await {
+        Ok(body) => body,
+        Err(_) => {
+            return message_result(
+                "unknown",
+                "Acknowledgment unavailable; verify recipient before retrying",
+            );
+        }
+    };
+    let body = String::from_utf8_lossy(&body);
+    if code.is_success() {
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        let status = value
+            .get("disposition")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                (value.get("sent").and_then(serde_json::Value::as_bool) == Some(true))
+                    .then_some("sent")
+            });
+        return match status {
+            Some(status @ ("sent" | "steered" | "queued")) => {
+                message_result(status, "Input accepted; execution is not confirmed")
+            }
+            _ => message_result(
+                "unknown",
+                "Acknowledgment unavailable; verify recipient before retrying",
+            ),
+        };
+    }
+    let status = if code.is_client_error()
+        || body.starts_with("worker_not_ready")
+        || body.starts_with("worker_capacity_full")
+    {
+        "error"
+    } else {
+        "unknown"
+    };
+    message_result(status, &body)
+}
+
+fn message_result(status: &str, message: &str) -> axum::response::Response {
+    Json(serde_json::json!({"status": status, "message": message})).into_response()
 }
 
 /// Max decoded size of a pasted image (5 MiB). Claude Code caps image
@@ -592,6 +860,128 @@ pub async fn read_output(
 #[cfg(test)]
 mod send_output_tests {
     use super::*;
+
+    #[test]
+    fn messaging_targets_preserve_lifecycle_and_supported_agent_boundaries() {
+        for (view, tool, status, accepted) in [
+            (crate::session::View::Terminal, "claude", Status::Idle, true),
+            (
+                crate::session::View::Terminal,
+                "claude",
+                Status::Waiting,
+                true,
+            ),
+            (
+                crate::session::View::Terminal,
+                "claude",
+                Status::Running,
+                false,
+            ),
+            (crate::session::View::Terminal, "shell", Status::Idle, false),
+            (
+                crate::session::View::Structured,
+                "claude",
+                Status::Running,
+                true,
+            ),
+            (
+                crate::session::View::Structured,
+                "claude",
+                Status::Stopped,
+                false,
+            ),
+            (
+                crate::session::View::Structured,
+                "claude",
+                Status::Error,
+                false,
+            ),
+        ] {
+            let mut instance = Instance::new("duplicate title", "/repo");
+            instance.view = view;
+            instance.tool = tool.into();
+            instance.status = status;
+            assert_eq!(
+                message_target_eligible(&instance),
+                accepted,
+                "{view:?} {tool} {status:?}"
+            );
+            instance.archived_at = Some(chrono::Utc::now());
+            assert!(!message_target_eligible(&instance));
+            instance.archived_at = None;
+            instance.trashed_at = Some(chrono::Utc::now());
+            assert!(!message_target_eligible(&instance));
+            instance.trashed_at = None;
+            instance.snoozed_until = Some(chrono::Utc::now() + chrono::Duration::hours(1));
+            assert!(!message_target_eligible(&instance));
+        }
+    }
+
+    #[tokio::test]
+    async fn messaging_denied_source_does_not_reach_submission_or_touch_recipient() {
+        let mut source = Instance::new("duplicate title", "/source");
+        source.source_profile = "test".into();
+        source.view = crate::session::View::Structured;
+        let mut target = Instance::new("duplicate title", "/target");
+        target.source_profile = "test".into();
+        let state =
+            crate::server::test_support::build_test_app_state(vec![source.clone(), target.clone()]);
+        let response = submit_session_message(
+            State(state.clone()),
+            Path(target.id.clone()),
+            Ok(Json(SessionMessageRequest {
+                source_session_id: source.id,
+                text: " exact message\n ".into(),
+            })),
+        )
+        .await;
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["status"], "error");
+        assert!(body["message"].as_str().unwrap().contains("unauthorized"));
+        assert!(state.instance_locks.read().await.is_empty());
+        let instances = state.instances.read().await;
+        let recipient = instances
+            .iter()
+            .find(|instance| instance.id == target.id)
+            .unwrap();
+        assert_eq!(recipient.last_accessed_at, target.last_accessed_at);
+        assert_eq!(recipient.status, target.status);
+    }
+
+    #[tokio::test]
+    async fn messaging_reports_acknowledgment_without_promising_execution() {
+        for (code, body, expected) in [
+            (StatusCode::OK, r#"{"sent":true}"#, "sent"),
+            (
+                StatusCode::ACCEPTED,
+                r#"{"disposition":"queued","queued_id":"q"}"#,
+                "queued",
+            ),
+            (
+                StatusCode::ACCEPTED,
+                r#"{"disposition":"steered"}"#,
+                "steered",
+            ),
+            (StatusCode::ACCEPTED, "", "unknown"),
+            (StatusCode::CONFLICT, "recipient stopped", "error"),
+            (StatusCode::SERVICE_UNAVAILABLE, "worker_not_ready", "error"),
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "lost acknowledgment",
+                "unknown",
+            ),
+        ] {
+            let response = message_acknowledgment((code, body).into_response()).await;
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(result["status"], expected, "{code} {body}");
+        }
+    }
 
     #[test]
     fn output_query_default_constants() {

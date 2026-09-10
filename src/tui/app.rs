@@ -190,6 +190,9 @@ pub struct App {
     /// up and enter the acp view (which needs `event_stream` access
     /// the sync `execute_action` can't lend out).
     pending_structured_view_open: Option<String>,
+    pending_plugin_command: Option<String>,
+    plugin_chat: Option<crate::tui::structured_view::popup::ChatPopup>,
+    plugin_chat_start: Option<crate::tui::structured_view::popup::ChatStartup>,
     /// Set by `Action::SwitchSessionView` so the async main loop can run
     /// the daemon switch POST (awaited; the sync handler can't).
     pending_view_switch: Option<String>,
@@ -503,6 +506,9 @@ impl App {
             mouse_capture_allowed: crate::tui::mouse_capture_requested(&config.session),
             mosh_active,
             pending_structured_view_open: None,
+            pending_plugin_command: None,
+            plugin_chat: None,
+            plugin_chat_start: None,
             pending_daemon_start_open: None,
             preview_mount_pending: None,
             pending_view_switch: None,
@@ -929,6 +935,26 @@ impl App {
             // view. Computed outside the select! so the arm's `expect` is
             // guarded by the same check that enables it.
             let embedded_mounted = self.home.structured_preview.is_some();
+            if self.plugin_chat.as_ref().is_some_and(|chat| {
+                chat.profile != self.home.active_profile
+                    || !crate::plugin::registry().active().any(|plugin| {
+                        plugin.manifest.commands.iter().any(|command| {
+                            format!("plugin.{}.{}", plugin.id(), command.id) == chat.command
+                        })
+                    })
+            }) {
+                self.plugin_chat = None;
+            }
+            if self.plugin_chat_start.as_ref().is_some_and(|chat| {
+                chat.profile != self.home.active_profile
+                    || !crate::plugin::registry().active().any(|plugin| {
+                        plugin.manifest.commands.iter().any(|command| {
+                            format!("plugin.{}.{}", plugin.id(), command.id) == chat.command
+                        })
+                    })
+            }) {
+                self.plugin_chat_start = None;
+            }
 
             // All event sources are polled cooperatively via tokio::select!.
             // This ensures signal futures actually get scheduled (fixing #608
@@ -949,6 +975,11 @@ impl App {
                                 continue;
                             }
                             crate::session::write_tui_activity();
+                            if self.plugin_chat_visible() {
+                                self.handle_plugin_chat_event(Event::Key(key)).await;
+                                self.draw(terminal)?;
+                                continue;
+                            }
                             // Paste-burst detector for VoiceInk + Mosh ergonomics.
                             // Mosh strips bracketed-paste markers, so pasted
                             // dictation arrives as a stream of individual KeyEvents
@@ -1183,6 +1214,11 @@ impl App {
                             continue;
                         }
                         Some(Ok(Event::Mouse(mouse))) => {
+                            if self.plugin_chat_visible() {
+                                self.handle_plugin_chat_event(Event::Mouse(mouse)).await;
+                                self.draw(terminal)?;
+                                continue;
+                            }
                             if !matches!(mouse.kind, MouseEventKind::Moved) {
                                 crate::session::write_tui_activity();
                             }
@@ -1575,6 +1611,11 @@ impl App {
                             continue;
                         }
                         Some(Ok(Event::Paste(text))) => {
+                            if self.plugin_chat_visible() {
+                                self.handle_plugin_chat_event(Event::Paste(text)).await;
+                                self.draw(terminal)?;
+                                continue;
+                            }
                             crate::session::write_tui_activity();
                             // An ACTIVE structured view owns pasted text (it
                             // goes to its composer, same as the full-screen
@@ -1650,6 +1691,46 @@ impl App {
                         self.draw(terminal)?;
                 }
                 _ = refresh_interval.tick() => {}
+                result = async {
+                    match self.plugin_chat_start.as_mut().and_then(|chat| chat.result.as_mut()) {
+                        Some(result) => result.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let startup = self.plugin_chat_start.as_mut().expect("startup result pending");
+                    startup.result = None;
+                    match result.unwrap_or_else(|error| Err(error.into())) {
+                        Ok(mut chat) => {
+                            chat.visible = startup.visible;
+                            self.plugin_chat = Some(chat);
+                            self.plugin_chat_start = None;
+                        }
+                        Err(error) => {
+                            if startup.visible && matches!(
+                                error.downcast_ref::<crate::acp::client::ManagerError>(),
+                                Some(crate::acp::client::ManagerError::NoDaemonRunning(_))
+                            ) {
+                                startup.visible = false;
+                                self.home.serve_view = Some(crate::tui::dialogs::ServeView::new());
+                            }
+                            startup.error = Some(error.to_string());
+                        }
+                    }
+                    self.draw(terminal)?;
+                }
+                ev = async {
+                    match self.plugin_chat.as_mut() {
+                        Some(chat) => chat.next_event().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if let Some(chat) = self.plugin_chat.as_mut() {
+                        if let Some(event) = ev {
+                            chat.view.apply_event(event).await;
+                        }
+                    }
+                    self.draw(terminal)?;
+                }
                 _ = preview_wake.notified() => {
                     // The capture worker produced fresh content. Repaint so
                     // it shows; an idle pane never fires this, so the home
@@ -2213,6 +2294,13 @@ impl App {
             status_text,
             image_update.flatten(),
         );
+        if let Some(chat) = self.plugin_chat.as_mut() {
+            chat.view.tick();
+            chat.render(frame, &self.theme);
+        }
+        if let Some(startup) = self.plugin_chat_start.as_ref() {
+            startup.render(frame, &self.theme);
+        }
         // Sampled trace for frame-budget diagnostics. A full-frame trace on
         // every paint would dominate the log at default_level = trace, so emit
         // only for frames over the 16ms / 60fps budget and live-send frames.
@@ -2833,6 +2921,68 @@ fn quit_intent(
 }
 
 impl App {
+    fn plugin_chat_visible(&self) -> bool {
+        self.plugin_chat.as_ref().is_some_and(|chat| chat.visible)
+            || self
+                .plugin_chat_start
+                .as_ref()
+                .is_some_and(|chat| chat.visible)
+    }
+
+    async fn handle_plugin_chat_event(&mut self, event: Event) {
+        if let Some(startup) = self.plugin_chat_start.as_mut().filter(|chat| chat.visible) {
+            if matches!(event, Event::Key(key) if key.code == KeyCode::Esc) {
+                startup.visible = false;
+            }
+            return;
+        }
+        if let Some(chat) = self.plugin_chat.as_mut() {
+            if let Err(error) = chat.handle_event(event).await {
+                self.update_status = Some(UpdateStatus::transient(format!("Plugin chat: {error}")));
+            }
+        }
+    }
+
+    fn open_plugin_command(&mut self, command: &str) -> Result<()> {
+        if let Some(chat) = self
+            .plugin_chat
+            .as_mut()
+            .filter(|chat| chat.command == command)
+        {
+            chat.reopen();
+            return Ok(());
+        }
+        if let Some(startup) = self
+            .plugin_chat_start
+            .as_mut()
+            .filter(|chat| chat.command == command && chat.result.is_some())
+        {
+            startup.visible = true;
+            return Ok(());
+        }
+        let registry = crate::plugin::registry();
+        let title = registry
+            .active()
+            .find_map(|plugin| {
+                plugin
+                    .manifest
+                    .commands
+                    .iter()
+                    .find(|entry| {
+                        format!("plugin.{}.{}", plugin.id(), entry.id) == command
+                            && matches!(entry.action, Some(aoe_plugin_api::ClientAction::OpenChat))
+                    })
+                    .map(|entry| entry.title.clone())
+            })
+            .ok_or_else(|| anyhow::anyhow!("Chat command is no longer available"))?;
+        self.plugin_chat_start = Some(crate::tui::structured_view::popup::ChatStartup::new(
+            command.to_string(),
+            title,
+            self.home.active_profile.clone(),
+        ));
+        Ok(())
+    }
+
     async fn handle_key(
         &mut self,
         key: KeyEvent,
@@ -2966,6 +3116,12 @@ impl App {
         }
         if let Some(action) = self.home.handle_key(key, self.update_info.as_ref()) {
             self.execute_action(action, terminal)?;
+        }
+
+        if let Some(command) = self.pending_plugin_command.take() {
+            if let Err(error) = self.open_plugin_command(&command) {
+                self.update_status = Some(UpdateStatus::transient(format!("Plugin chat: {error}")));
+            }
         }
 
         // Drain AFTER the key was handled: a keyboard-confirmed switch
@@ -3534,6 +3690,7 @@ impl App {
                 // we return.
                 self.pending_structured_view_open = Some(id);
             }
+            Action::PluginCommand(command) => self.pending_plugin_command = Some(command),
             Action::SwitchSessionView(id) => {
                 // Same stash-for-the-async-loop pattern: the daemon POST
                 // must be awaited, which this sync handler can't do.
@@ -4204,6 +4361,7 @@ pub enum Action {
     /// after `execute_action` returns and runs the async acp loop
     /// against the borrowed terminal + event stream.
     OpenStructuredView(String),
+    PluginCommand(String),
     /// Flip a session's persisted view (structured ↔ terminal) through the
     /// daemon's switch endpoints. Stashed in `pending_view_switch` (the
     /// POST needs the async loop) and drained alongside
