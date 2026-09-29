@@ -19,7 +19,7 @@ A manifest carries two independent version axes.
 
 | Key | Meaning |
 |---|---|
-| `api_version` | The manifest *schema* version. The current schema is `13`. The host rejects a manifest whose `api_version` is newer than it supports. Bump it as you adopt newer sections (see below). |
+| `api_version` | The manifest *schema* version. The current schema is `14`. The host rejects a manifest whose `api_version` is newer than it supports. Bump it as you adopt newer sections (see below). |
 | `aoe_version` | A semver requirement on the *host app* version, e.g. `">=1.11.0, <2.0.0"`. The host refuses to install, and skips loading, a plugin whose requirement excludes the running version. Optional; requires `api_version >= 4`. |
 
 Schema additions by `api_version`: `2` added contributions (commands, keybinds, settings, ui), `3` added the `pane` UI slot, `4` added `status` and `aoe_version`, `5` added `screenshots`, `6` added a command `action`, `7` added identity icons, `8` added the `composer-action` UI slot, `9` added session-driving worker RPCs (see [Session-driving RPCs](#session-driving-rpcs)), plugin-private storage, and the `dynamic_select` / `object_list` / `cron` settings widgets, `10` is retired (its `settings-page` and `tool-card-badge` UI slots were removed when MCP and skills management moved into core), `11` added the `acp.capabilities.probe` RPC + capability, a `thinking` (thought-level) list on the capability response, the `dynamic_multi_select` object-list field widget, and an optional `project_path` (empty = scratch session), `extra_project_paths`, and a `sandbox` flag on `sessions.create`, plus a `multiline` attribute for `string` settings fields, `12` grew the pane block vocabulary (see [Pane payload](#pane-payload)): the `callout`, `bar` and `columns` kinds, clickable `row`s carrying `params`, header summaries and scrollable bodies on `section`, `disabled` / `variant` / `href` on `action`, and a pane-level `footer`, `13` added the global `home-pane` UI slot (a host-wide docked pane carrying the same block vocabulary as `pane`) and the `sparkline` block kind (a history plot with optional per-sample `bands` coloring).
@@ -30,7 +30,7 @@ Schema additions by `api_version`: `2` added contributions (commands, keybinds, 
 id = "dev.example.my-plugin"
 name = "My Plugin"
 version = "0.1.0"
-api_version = 13
+api_version = 14
 aoe_version = ">=1.11.0, <2.0.0"
 description = "What the plugin does."
 capabilities = ["runtime.worker"]
@@ -41,7 +41,7 @@ capabilities = ["runtime.worker"]
 | `id` | string | yes | Plugin id (see [Plugin id](#plugin-id)). Namespaces config, events, and action names. |
 | `name` | string | yes | Human-readable display name. |
 | `version` | string | yes | Semantic version of the plugin. |
-| `api_version` | integer | yes | Manifest schema version, `1` to `13`. |
+| `api_version` | integer | yes | Manifest schema version, `1` to `14`. |
 | `description` | string | no | Shown in plugin listings. Defaults to empty. |
 | `aoe_version` | string | no | Host-app semver requirement. Requires `api_version >= 4`. |
 | `capabilities` | array of string | no | Runtime grants the worker needs (see [Capabilities](#capabilities)). Static contributions need none. |
@@ -104,7 +104,7 @@ description = "Show the status summary."
 | `id` | string | yes | Command id. Empty is unaddressable. |
 | `title` | string | no | Display name. |
 | `description` | string | no | Help text. |
-| `action` | table | no | A client-executed action. Requires `api_version >= 6` and the `browser_open` capability. |
+| `action` | table | no | `open-ui-link` requires API v6 and `browser_open`; `open-chat` requires API v14 and session creation/prompt grants. |
 
 ### Command action
 
@@ -115,9 +115,33 @@ slot = "row-badge"
 id = "my_badge"
 ```
 
-The only `kind` is `open-ui-link`: it opens the `href` from the plugin's own
+The `open-ui-link` kind opens the `href` from the plugin's own
 `(slot, id)` UI-state entry in the browser, with no worker round-trip. The
 `(slot, id)` pair must match a declared `[[ui]]` entry on a per-session slot.
+
+API v14 adds `action = { kind = "open-chat" }`. It opens a retained structured
+chat modal, with a visible dashboard action and the command's configured TUI
+binding. It requires a worker, `runtime.worker`, `session.read`, `session.create`, and
+`session.prompt`. The host sends the worker a JSON-RPC `plugin.chat.open`
+request with `command`, `profile`, configured `agent_id`, and `sandbox`.
+The worker responds with `{ "session_id": "..." }`; the host verifies that
+the session belongs to that plugin. Use plugin-private storage and creation
+idempotency to converge concurrent opens. Closing the modal leaves turns running.
+
+For open-chat plugins granted `session.read`, their owned structured sessions
+receive the session-scoped `aoe_list_sessions`, `aoe_get_session_details`, and
+`aoe_get_recent_activity` MCP tools through the existing ACP configuration path.
+These tools expose the bounded reads below, exclude the calling session from
+search results, and share a 32,000-character source-data budget per active turn,
+including serialized metadata. Steering does not reset the budget. No messaging
+tool is exposed. If event retention removes a turn boundary, reads fail closed
+until a later turn establishes a newer boundary. The host bridge currently requires a host agent; container
+creation fails explicitly rather than changing the requested sandbox policy.
+
+The modal's standalone, directly typed `/message` command opens the host's
+recipient picker and exact-content editor. The user confirms one recipient and
+message. These user requests use ordinary terminal and ACP submission services,
+with fresh eligibility checks; `sessions.turn.send` retains its ownership gate.
 
 ## Keybinds
 
@@ -264,7 +288,22 @@ enforces a strict security model around them.
 | `acp.capabilities.probe` | `acp.capabilities.probe` | Populate the catalog for one agent (optional `agent_id`; otherwise every undiscovered registry agent) via a handshake-only probe, then return the same shape as `acp.capabilities.get`. Spawns the adapter and runs initialize + `session/new` with **no prompt turn** (no tokens); each probe degrades to a no-op on failure. `api_version >= 11`. |
 | `sessions.create` | `session.create` (+ `session.prompt` for an initial turn, + `session.unattended` for an unattended mode) | Create a structured session, optionally with an initial turn and a plugin-scoped idempotency key. |
 | `sessions.turn.send` | `session.prompt` | Deliver a turn to a session **this plugin created**. |
+| `sessions.search` | `session.read` | Search active-profile session metadata with bounded results and `next_after_id` continuation. |
+| `sessions.details` | `session.read` | Read known metadata by stable `session_id`, including lifecycle and observation timestamps. |
+| `sessions.recent_activity` | `session.read` | Read normalized recent structured events or terminal capture by stable `session_id`. |
 | `plugin.storage.get` / `set` / `cas` / `remove` | `runtime.worker` | Plugin-private durable key/value storage (see [Plugin storage](#plugin-storage)). |
+
+The v14 read RPCs accept no filesystem paths or tmux targets. `sessions.search`
+takes `query`, optional `agent`, `group`, `status`, `include_archived`,
+`exclude_session_id`, `after_id`, and `limit`. Search covers title, ID, path,
+agent, group, and status; trash is excluded. Pass the returned `next_after_id`
+as `after_id` to continue. Results identify omitted data and stored-status
+freshness. Details leave missing fields unknown. Recent activity accepts
+`limit` (100 lines by default, maximum 200) and `max_chars` (16,000 Unicode
+characters by default, maximum 32,000), and reports source, capture time,
+truncation, and explicit `available`, `unavailable`, or `error` state. This
+window is not a search of complete history. Control-sequence normalization and
+existing redaction do not guarantee removal of every secret.
 
 **Project selection (`api_version >= 11`).** `sessions.create` takes an optional
 `project_path` and an optional `extra_project_paths` array. Omitting

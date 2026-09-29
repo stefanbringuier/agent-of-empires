@@ -43,21 +43,23 @@ pub use mcp::{drop_mcp_server, get_mcp_servers, keep_mcp_server, resolve_mcp_con
 pub use plugin_settings::resolve_options;
 pub use plugins::{
     apply_plugin_update, dismiss_plugin_update, invoke_plugin_action, invoke_plugin_command,
-    list_plugins, plugin_commands, plugin_details, plugin_discover, plugin_job_status,
-    plugin_ui_state, plugin_update_preview, plugin_updates, preview_plugin_install,
-    serve_plugin_icon, set_plugin_enabled, start_plugin_install, start_plugin_uninstall,
+    list_plugins, open_plugin_chat, plugin_commands, plugin_details, plugin_discover,
+    plugin_job_status, plugin_ui_state, plugin_update_preview, plugin_updates,
+    preview_plugin_install, serve_plugin_icon, set_plugin_enabled, start_plugin_install,
+    start_plugin_uninstall,
 };
 pub use projects::{create_project, delete_project, list_projects, update_project};
 pub use sessions::{
     attach_session_project, create_session, delete_session, delete_workspace,
     ensure_container_terminal, ensure_session, ensure_terminal, force_smart_rename,
-    get_recent_projects, kill_terminal, list_sessions, paste_image, preview_volume_ignores_globs,
-    read_output, rename_session, restore_session, search_sessions, send_message,
-    serve_session_artifact, session_diff_file, session_diff_files, session_file, set_worktree_name,
-    start_session, stop_session, summarize_session, trash_session, update_session_archive,
-    update_session_color, update_session_diff_base, update_session_group,
-    update_session_notifications, update_session_pin, update_session_snooze, update_session_unread,
-    update_workspace_ordering, CleanupDefaults, OutputQuery, SendMessageRequest, SessionResponse,
+    get_recent_projects, kill_terminal, list_sessions, message_targets, paste_image,
+    preview_volume_ignores_globs, read_output, rename_session, restore_session, search_sessions,
+    send_message, serve_session_artifact, session_diff_file, session_diff_files, session_file,
+    set_worktree_name, start_session, stop_session, submit_session_message, summarize_session,
+    trash_session, update_session_archive, update_session_color, update_session_diff_base,
+    update_session_group, update_session_notifications, update_session_pin, update_session_snooze,
+    update_session_unread, update_workspace_ordering, CleanupDefaults, OutputQuery,
+    SendMessageRequest, SessionResponse,
 };
 pub use skills::{
     adopt_skill, create_skill, delete_skill, edit_skill, list_skills, read_skill, sync_skills,
@@ -320,7 +322,7 @@ mod tests {
             (
                 "api/sessions/send.rs",
                 include_str!("sessions/send.rs"),
-                &["send_message"],
+                &["send_message", "submit_session_message"],
             ),
             (
                 "api/sessions/ensure.rs",
@@ -553,7 +555,7 @@ mod tests {
             (
                 "api/sessions/send.rs",
                 include_str!("sessions/send.rs"),
-                &["send_message"],
+                &["send_message", "submit_session_message"],
             ),
             (
                 "api/sessions/ensure.rs",

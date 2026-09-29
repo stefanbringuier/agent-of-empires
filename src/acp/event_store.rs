@@ -1584,6 +1584,33 @@ impl EventStore {
         bg_in_flight > 0
     }
 
+    /// Retained terminal boundary, stable across steering. Pruning the boundary
+    /// can regress the epoch; callers must reject a regressed budget epoch.
+    pub(crate) fn active_turn_epoch(&self, session_id: &str) -> Result<Option<u64>> {
+        let conn = self
+            .conn
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        Ok(conn
+            .query_row(
+                "WITH boundary AS (
+                   SELECT COALESCE(MAX(seq), 0) AS ended FROM acp_events
+                   WHERE session_id = ?1
+                     AND (json_extract(event_json, '$.Stopped') IS NOT NULL
+                       OR json_extract(event_json, '$.AgentStartupError') IS NOT NULL)
+                 )
+                 SELECT ended + 1 FROM boundary WHERE EXISTS (
+                   SELECT 1 FROM acp_events WHERE session_id = ?1 AND seq > ended
+                     AND json_extract(event_json, '$.UserPromptSent') IS NOT NULL
+                 )",
+                params![session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .map(u64::try_from)
+            .transpose()?)
+    }
+
     /// Read the inputs the terminal-repair pass decides on. `None` when the
     /// session has no substantive event at all, or its newest one fails to
     /// decode.
@@ -2289,6 +2316,72 @@ mod tests {
             text: text.into(),
             attachments: vec![],
         }
+    }
+
+    #[test]
+    fn active_turn_identity_survives_steering_and_changes_after_termination() {
+        let (_temp, store) = open_store(1000);
+        assert_eq!(store.active_turn_epoch("session").unwrap(), None);
+        for (seq, event, expected) in [
+            (1, user_prompt("first turn"), Some(1)),
+            (2, agent_chunk("working"), Some(1)),
+            (3, user_prompt("steering"), Some(1)),
+            (
+                4,
+                Event::Stopped {
+                    reason: "done".into(),
+                },
+                None,
+            ),
+            (5, user_prompt("next turn"), Some(5)),
+            (6, user_prompt("more steering"), Some(5)),
+            (
+                7,
+                Event::AgentStartupError {
+                    message: "failed".into(),
+                },
+                None,
+            ),
+            (8, user_prompt("retry"), Some(8)),
+        ] {
+            store.record("session", seq, &event).unwrap();
+            assert_eq!(store.active_turn_epoch("session").unwrap(), expected);
+            assert_eq!(
+                store.active_turn_epoch("another-profile-session").unwrap(),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn pruning_steering_never_advances_the_read_budget_epoch() {
+        let (_temp, store) = open_store(2);
+        for seq in 1..=3 {
+            store
+                .record("session", seq, &user_prompt("steering"))
+                .unwrap();
+            assert_eq!(store.active_turn_epoch("session").unwrap(), Some(1));
+        }
+        store
+            .record(
+                "session",
+                4,
+                &Event::Stopped {
+                    reason: "done".into(),
+                },
+            )
+            .unwrap();
+        store
+            .record("session", 5, &user_prompt("next turn"))
+            .unwrap();
+        assert_eq!(store.active_turn_epoch("session").unwrap(), Some(5));
+        store
+            .record("session", 6, &user_prompt("steering"))
+            .unwrap();
+        assert_eq!(store.active_turn_epoch("session").unwrap(), Some(1));
+        store.record("session", 7, &agent_chunk("working")).unwrap();
+        store.record("session", 8, &agent_chunk("working")).unwrap();
+        assert_eq!(store.active_turn_epoch("session").unwrap(), None);
     }
 
     #[test]

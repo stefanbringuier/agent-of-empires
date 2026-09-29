@@ -29,7 +29,8 @@
 
 use crate::acp::elicitations::ElicitationQuestion;
 use crate::acp::state::{
-    AcpState, AvailableCommand, DiffPreview, ModeInfo, PlanStepStatus, SessionUsage,
+    AcpState, AvailableCommand, ConfigOptionCategory, DiffPreview, ModeInfo, PlanStepStatus,
+    SessionUsage,
 };
 use crate::acp::transcript::{
     patch_transcript_row, upsert_transcript_row, TranscriptDelta, TranscriptRow, TranscriptRowKind,
@@ -43,6 +44,8 @@ pub struct AcpTranscript {
     /// Resolved ACP registry key shown in the header. Updated when the backend
     /// switches mid-session.
     pub agent_name: Option<String>,
+    pub model_name: Option<String>,
+    configured_model_name: Option<String>,
     /// The daemon-owned ordered transcript, reconciled by row id from the WS
     /// `transcript_snapshot` / `transcript_delta` channel and the
     /// `?view=rows` replay. `render.rs` projects these to text; nothing here
@@ -190,6 +193,8 @@ impl AcpTranscript {
             session_id: session_id.into(),
             session_title: None,
             agent_name: None,
+            model_name: None,
+            configured_model_name: None,
             server_rows: Vec::new(),
             pending_approvals: Vec::new(),
             pending_elicitations: Vec::new(),
@@ -295,6 +300,19 @@ impl AcpTranscript {
         self.compacting = state.compacting;
         self.usage = state.usage;
         let holds = |field: &str| unchanged.iter().any(|f| f == field);
+        if !holds("config_options") {
+            self.configured_model_name = state.config_options.iter().find_map(|option| {
+                (option.category == ConfigOptionCategory::Model).then(|| {
+                    option
+                        .options
+                        .iter()
+                        .find(|choice| choice.value == option.current_value)
+                        .map(|choice| choice.name.clone())
+                        .unwrap_or_else(|| option.current_value.clone())
+                })
+            });
+        }
+        self.model_name = self.configured_model_name.clone().or(state.model);
         if !holds("available_commands") {
             self.available_commands = state.available_commands;
         }
@@ -434,6 +452,32 @@ mod tests {
             s.apply_event(e.clone()).expect("apply ok");
         }
         s
+    }
+
+    #[test]
+    fn model_label_preserves_omitted_selector_and_falls_back_when_removed() {
+        use crate::acp::state::{ConfigOptionChoice, ConfigOptionDescriptor};
+
+        let mut transcript = AcpTranscript::new("s-1");
+        let mut snapshot = reduced(&[]);
+        snapshot.config_options.push(ConfigOptionDescriptor {
+            id: "model".into(),
+            name: "Model".into(),
+            description: None,
+            category: ConfigOptionCategory::Model,
+            current_value: "provider/model".into(),
+            options: vec![ConfigOptionChoice {
+                value: "provider/model".into(),
+                name: "Selected model".into(),
+                description: None,
+            }],
+        });
+        transcript.apply_reduced_state(1, snapshot, &[]);
+        assert_eq!(transcript.model_name.as_deref(), Some("Selected model"));
+        transcript.apply_reduced_state(2, reduced(&[]), &["config_options".into()]);
+        assert_eq!(transcript.model_name.as_deref(), Some("Selected model"));
+        transcript.apply_reduced_state(3, reduced(&[]), &[]);
+        assert_eq!(transcript.model_name.as_deref(), Some("claude-opus-5"));
     }
 
     fn approval(nonce: &str) -> Approval {

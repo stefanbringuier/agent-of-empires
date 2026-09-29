@@ -1151,6 +1151,20 @@ mod tests {
     }
 
     #[test]
+    fn councilor_default_shortcut_is_not_shadowed_by_core() {
+        let manifest = aoe_plugin_api::PluginManifest::from_toml_str(include_str!(
+            "../../../plugins/councilor/aoe-plugin.toml"
+        ))
+        .unwrap();
+        let shortcut = manifest
+            .keybinds
+            .iter()
+            .find(|binding| binding.command == "open")
+            .unwrap();
+        assert!(!core_shadows(&parse_chord(&shortcut.key).unwrap()));
+    }
+
+    #[test]
     fn resolve_action_wraps_core_bindings() {
         // With no active plugins in the test process, the merged resolver just
         // returns the core action, wrapped as Core.

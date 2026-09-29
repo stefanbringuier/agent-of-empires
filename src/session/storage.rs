@@ -1138,6 +1138,7 @@ impl Storage {
             match <Instance as serde::Deserialize>::deserialize(&row) {
                 Ok(mut inst) => {
                     inst.set_file_watch(self.file_watch.clone());
+                    inst.source_profile.clone_from(&self.profile);
                     instances.push(inst);
                 }
                 Err(e) => {
@@ -3191,6 +3192,32 @@ mod tests {
         }
         let err = resolve_symlink_chain(&prev).unwrap_err().to_string();
         assert!(err.contains("too deep"), "got: {err}");
+    }
+
+    #[test]
+    fn loaded_sessions_use_the_owning_storage_profile() -> Result<()> {
+        let temp = tempdir()?;
+        let mut instance = Instance::new("Councilor", "/tmp/project");
+        instance.created_by_plugin = Some("dev.aoe.councilor".to_string());
+        for profile in ["main", "other"] {
+            let path = temp.path().join(format!("{profile}.json"));
+            let storage = Storage::new_for_test_path(profile, path.clone());
+            for persisted_profile in [None, Some("unrelated")] {
+                let mut row = serde_json::to_value(&instance)?;
+                if let Some(persisted_profile) = persisted_profile {
+                    row["source_profile"] = serde_json::json!(persisted_profile);
+                }
+                fs::write(&path, serde_json::to_vec(&vec![row])?)?;
+                let loaded = storage.load()?;
+                assert_eq!(loaded.len(), 1);
+                assert_eq!(loaded[0].effective_profile(), profile);
+                assert_eq!(loaded[0].created_by_plugin, instance.created_by_plugin);
+                assert!(serde_json::to_value(&loaded[0])?
+                    .get("source_profile")
+                    .is_none());
+            }
+        }
+        Ok(())
     }
 
     #[test]

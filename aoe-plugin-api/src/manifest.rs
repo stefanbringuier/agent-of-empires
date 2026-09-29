@@ -111,6 +111,7 @@ pub struct CommandContribution {
     /// action directly, synchronously inside the user's gesture, so it works on
     /// a remote web dashboard where an async round-trip would be popup-blocked.
     /// Requires `api_version >= 6` and the `browser_open` capability.
+    /// `OpenChat` instead uses worker RPC and session grants in API v14.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<ClientAction>,
 }
@@ -121,6 +122,8 @@ pub struct CommandContribution {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ClientAction {
+    /// Open a plugin-owned structured session in the host chat modal. API v14.
+    OpenChat,
     /// Open the `href` carried by this plugin's own `(slot, id)` UI-state entry
     /// for the active session, in the user's browser. The href is read from the
     /// snapshot the surface already holds, so no worker call is made; the slot
@@ -1039,6 +1042,25 @@ impl PluginManifest {
                 !c.id.is_empty(),
                 format!("commands[{i}].id must not be empty"),
             );
+            if matches!(c.action, Some(ClientAction::OpenChat)) {
+                check(
+                    self.api_version >= 14 && self.runtime.is_some(),
+                    format!(
+                        "commands[{i}].action open-chat requires api_version >= 14 and a worker"
+                    ),
+                );
+                for capability in [
+                    "runtime.worker",
+                    "session.read",
+                    "session.create",
+                    "session.prompt",
+                ] {
+                    check(
+                        self.capabilities.iter().any(|c| c.as_str() == capability),
+                        format!("commands[{i}].action open-chat needs {capability}"),
+                    );
+                }
+            }
             if let Some(ClientAction::OpenUiLink { slot, id }) = &c.action {
                 check(
                     self.api_version >= 6,

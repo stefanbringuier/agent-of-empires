@@ -184,7 +184,6 @@ impl ListPicker {
         // Own the filtered list (Vec<String>) instead of borrowing
         // (Vec<&String>) so subsequent `&mut self` writes below don't
         // conflict with the borrow.
-        let filtered: Vec<String> = self.filtered_items().into_iter().cloned().collect();
         frame.render_widget(Clear, dialog_area);
 
         let title = format!(" {} ", self.title);
@@ -197,6 +196,13 @@ impl ListPicker {
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
+
+        self.render_body(frame, inner, theme);
+    }
+
+    pub fn render_body(&mut self, frame: &mut Frame, inner: Rect, theme: &Theme) {
+        let filtered: Vec<String> = self.filtered_items().into_iter().cloned().collect();
+        self.dialog_area = inner;
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)

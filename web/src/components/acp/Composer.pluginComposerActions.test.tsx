@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { AssistantRuntimeProvider, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PluginUiEntry } from "../../lib/api";
@@ -19,7 +19,13 @@ vi.mock("../../lib/pluginUiContext", () => ({
   usePluginUiRevision: () => 0,
 }));
 
-function HarnessComposer({ sessionId }: { sessionId: string }) {
+function HarnessComposer({
+  sessionId,
+  onUserCommand,
+}: {
+  sessionId: string;
+  onUserCommand?: (text: string) => boolean;
+}) {
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages: [],
     isRunning: false,
@@ -29,6 +35,7 @@ function HarnessComposer({ sessionId }: { sessionId: string }) {
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <Composer
+        onUserCommand={onUserCommand}
         sessionId={sessionId}
         currentAgent="claude"
         availableModes={[]}
@@ -45,6 +52,8 @@ function HarnessComposer({ sessionId }: { sessionId: string }) {
         promptCapabilities={null}
         pendingAttachments={[]}
         setPendingAttachments={() => {}}
+        queuedPrompts={[]}
+        editQueuedPrompt={() => {}}
       />
     </AssistantRuntimeProvider>
   );
@@ -101,6 +110,28 @@ afterEach(() => {
 });
 
 describe("Composer plugin composer actions", () => {
+  it("intercepts a typed host command but forwards pasted command text normally", async () => {
+    for (const pasted of [false, true]) {
+      const onUserCommand = vi.fn(() => true);
+      const view = render(<HarnessComposer sessionId={`command-${pasted}`} onUserCommand={onUserCommand} />);
+      const textarea = view.container.querySelector("textarea")!;
+      if (pasted) {
+        fireEvent.paste(textarea, { clipboardData: { items: [] } });
+        fireEvent.input(textarea, { target: { value: "/message" }, inputType: "insertFromPaste" });
+      } else {
+        for (let length = 1; length <= "/message".length; length++) {
+          fireEvent.input(textarea, { target: { value: "/message".slice(0, length) }, inputType: "insertText" });
+        }
+      }
+      await waitFor(() =>
+        expect((view.getByRole("button", { name: "Send message" }) as HTMLButtonElement).disabled).toBe(false),
+      );
+      fireEvent.click(view.getByRole("button", { name: "Send message" }));
+      expect(onUserCommand).toHaveBeenCalledTimes(pasted ? 0 : 1);
+      view.unmount();
+    }
+  });
+
   it("applies each plugin draft operation id once", async () => {
     set([composerEntry({ kind: "insert-text", id: "op-1", text: "hello" })]);
     const { container, rerender } = render(<HarnessComposer sessionId="sess-plugin" />);

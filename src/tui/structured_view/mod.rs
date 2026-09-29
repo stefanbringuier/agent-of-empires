@@ -11,6 +11,7 @@
 pub mod embedded;
 pub mod input;
 pub mod mention;
+pub mod popup;
 pub mod queue;
 pub mod reducer;
 pub mod render;
@@ -706,9 +707,10 @@ async fn handle_terminal_event(
                     .plugin_commands
                     .iter()
                     .find(|c| {
-                        c.keybinds
-                            .iter()
-                            .any(|kb| crate::tui::home::bindings::keybind_matches(kb, &key))
+                        !matches!(c.action, Some(aoe_plugin_api::ClientAction::OpenChat))
+                            && c.keybinds
+                                .iter()
+                                .any(|kb| crate::tui::home::bindings::keybind_matches(kb, &key))
                     })
                     .cloned()
                 {
@@ -1294,6 +1296,12 @@ async fn handle_plugin_command(
     toast_deadline: &mut Option<Instant>,
 ) {
     match cmd.action {
+        Some(aoe_plugin_api::ClientAction::OpenChat) => set_toast(
+            state,
+            toast_deadline,
+            "Return to the home screen to open this chat.".into(),
+            ToastKind::Info,
+        ),
         Some(aoe_plugin_api::ClientAction::OpenUiLink { slot, id }) => {
             let links = state
                 .plugin_ui

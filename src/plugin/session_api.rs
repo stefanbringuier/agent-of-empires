@@ -283,6 +283,36 @@ async fn admit_and_create(
     plugin_id: &str,
     req: SessionsCreateRequest,
 ) -> Result<SessionsCreateResponse, DispatchError> {
+    let chat_plugin = crate::plugin::registry()
+        .get(plugin_id)
+        .is_some_and(|plugin| {
+            plugin.manifest.commands.iter().any(|command| {
+                matches!(command.action, Some(aoe_plugin_api::ClientAction::OpenChat))
+            })
+        });
+    if chat_plugin {
+        if req.sandbox {
+            return Err(DispatchError::with_kind(
+                codes::FAILED_PRECONDITION,
+                "chat_bridge_unavailable",
+                "The session read bridge is not available inside containers; use a profile configured for host agents",
+            ));
+        }
+        let registry = crate::acp::AgentRegistry::with_defaults();
+        if !registry.get(&req.agent_id).is_some_and(|agent| {
+            if let Some(relative) = agent.command.strip_prefix("${aoe_data_dir}/") {
+                crate::session::get_app_dir().is_ok_and(|dir| dir.join(relative).is_file())
+            } else {
+                !agent.command.contains("${") && crate::cli::acp::command_present(&agent.command)
+            }
+        }) {
+            return Err(DispatchError::with_kind(
+                codes::FAILED_PRECONDITION,
+                "agent_unavailable",
+                "Configure an installed ACP-compatible agent before opening chat",
+            ));
+        }
+    }
     let catalog = load_catalog().await;
     let entry = catalog.agents.get(&req.agent_id);
 
@@ -423,11 +453,12 @@ async fn admit_and_create(
         }
     };
 
+    let (tool, agent_name) = session_agent_identity(&req.agent_id);
     let spec = StructuredSessionSpec {
         title: req.title,
         path: project_path,
         group: req.group.unwrap_or_default(),
-        tool: req.agent_id.clone(),
+        tool,
         worktree_enabled: false,
         worktree_branch: None,
         create_new_branch: false,
@@ -464,7 +495,7 @@ async fn admit_and_create(
         pending_initial_turn: req.initial_turn.as_ref().map(|t| t.text.clone()),
         acp_mode_id: req.mode_id.clone(),
         view: crate::session::View::Structured,
-        agent_name: None,
+        agent_name,
         agent_model: req.model_id.clone(),
         agent_effort: None,
         import_acp_session_id: None,
@@ -641,11 +672,33 @@ fn map_send_error(e: SendTurnError) -> DispatchError {
     }
 }
 
+fn session_agent_identity(agent_id: &str) -> (String, Option<String>) {
+    match agent_id {
+        "claude-code" => ("claude".to_string(), Some(agent_id.to_string())),
+        _ => (agent_id.to_string(), None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::plugin::automation_policy::AutomationPolicy;
     use crate::session::Instance;
+
+    #[test]
+    fn session_agent_identity_preserves_adapter_and_resolves_builtin_tool() {
+        let registry = crate::acp::agent_registry::AgentRegistry::with_defaults();
+        for agent_id in ["claude-code", "claude", "codex"] {
+            let (tool, agent_name) = session_agent_identity(agent_id);
+            assert!(crate::agents::get_agent(&tool).is_some(), "{agent_id}");
+            let requested = registry.get(agent_id).unwrap();
+            let selected = registry
+                .get(agent_name.as_deref().unwrap_or(&tool))
+                .unwrap();
+            assert_eq!(selected.command, requested.command);
+            assert_eq!(selected.args, requested.args);
+        }
+    }
 
     fn ctx_with(caps: &[&str]) -> PluginRpcContext {
         PluginRpcContext {

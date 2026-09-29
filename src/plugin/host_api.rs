@@ -35,7 +35,7 @@
 //! all, is enough.
 
 use std::collections::HashSet;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
 use aoe_plugin_api::UiSlot;
@@ -76,6 +76,7 @@ pub struct HostApiState {
     retention: usize,
     /// Session-storage profile the API operates on (the daemon's profile).
     profile: String,
+    event_store: Option<Arc<crate::acp::event_store::EventStore>>,
     /// Host-rendered UI state pushed by workers over `ui.state.*`/`ui.notify`.
     ui: UiStore,
     /// Monotonic settings revision, bumped on every settings write (#2897).
@@ -115,6 +116,7 @@ impl HostApiState {
             schema,
             retention,
             profile: profile.to_string(),
+            event_store: None,
             ui: UiStore::new(),
             settings_revision: std::sync::atomic::AtomicU64::new(0),
         })
@@ -122,6 +124,14 @@ impl HostApiState {
 
     fn storage(&self) -> anyhow::Result<Storage> {
         Storage::new_unwatched(&self.profile)
+    }
+
+    pub(crate) fn with_event_store(
+        mut self,
+        event_store: Arc<crate::acp::event_store::EventStore>,
+    ) -> Self {
+        self.event_store = Some(event_store);
+        self
     }
 
     /// Bump and return the settings revision. Called by the settings write
@@ -288,6 +298,13 @@ pub fn dispatch(
         "sessions.list" => {
             ctx.require(CAP_SESSION_READ)?;
             sessions_list(state, params)
+        }
+        "sessions.search" | "sessions.details" | "sessions.recent_activity" => {
+            ctx.require(CAP_SESSION_READ)?;
+            let storage = state
+                .storage()
+                .map_err(|e| DispatchError::internal(e.to_string()))?;
+            super::session_reads::dispatch(&storage, state.event_store.as_deref(), method, params)
         }
         "config.get" => {
             ctx.require(CAP_WORKER)?;
@@ -731,7 +748,7 @@ fn plugin_storage_cas(
     // One transaction so the read-compare-write cannot interleave with
     // another worker task's storage call.
     let tx = conn
-        .transaction()
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| DispatchError::internal(e.to_string()))?;
     let stored: Option<String> = tx
         .query_row(
@@ -1018,6 +1035,15 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, codes::FORBIDDEN);
+
+        for method in [
+            "sessions.search",
+            "sessions.details",
+            "sessions.recent_activity",
+        ] {
+            let err = dispatch(&state, &ctx(&[]), method, &json!({})).unwrap_err();
+            assert_eq!(err.code, codes::FORBIDDEN);
+        }
 
         // session.meta.set requires session.write specifically.
         let err = dispatch(

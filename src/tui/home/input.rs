@@ -2702,6 +2702,21 @@ impl HomeView {
         match bindings::resolve_action(&key, self.strict_hotkeys, &ctx) {
             Some(bindings::ResolvedAction::Core(id)) => return self.run_action(id, update_info),
             Some(bindings::ResolvedAction::Plugin(action)) => {
+                let canonical = action.canonical();
+                if crate::plugin::registry()
+                    .get(&action.plugin_id)
+                    .is_some_and(|plugin| {
+                        plugin.manifest.commands.iter().any(|command| {
+                            canonical == format!("plugin.{}.{}", plugin.id(), command.id)
+                                && matches!(
+                                    command.action,
+                                    Some(aoe_plugin_api::ClientAction::OpenChat)
+                                )
+                        })
+                    })
+                {
+                    return Some(Action::PluginCommand(canonical));
+                }
                 // Tier 0 has no plugin executor; the binding resolves and is
                 // inspectable, but running it waits for the runtime host (#2095).
                 self.info_dialog = Some(InfoDialog::sized_to_fit(
@@ -2709,7 +2724,7 @@ impl HomeView {
                     &format!(
                         "{} is a plugin action. Running plugin actions needs the plugin runtime, \
                          which is not available yet.",
-                        action.canonical()
+                        canonical
                     ),
                 ));
                 return None;

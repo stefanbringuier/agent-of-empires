@@ -42,7 +42,7 @@ pub enum EmbeddedEvent {
 }
 
 pub struct EmbeddedView {
-    state: StructuredViewState,
+    pub(super) state: StructuredViewState,
     toast_deadline: Option<Instant>,
     plugin_rx: tokio::sync::mpsc::Receiver<PluginPoll>,
     session_info_rx: tokio::sync::mpsc::Receiver<super::ViewSideInfo>,
@@ -225,5 +225,61 @@ impl EmbeddedView {
     /// theme keeps this callable without one.
     pub fn selection_text(&self, width: u16) -> ratatui::text::Text<'static> {
         render::wrapped_transcript(&self.state, &crate::tui::styles::Theme::default(), width)
+    }
+}
+
+#[cfg(test)]
+mod popup_tests {
+    use super::*;
+    use crate::acp::client::{discovery::Source, HttpClient};
+    use crate::tui::structured_view::popup::ChatPopup;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[tokio::test]
+    async fn popup_resize_close_and_reopen_preserve_draft_and_scroll() {
+        let endpoint = DaemonEndpoint::new("http://127.0.0.1:1".into(), None, Source::Env);
+        let http = HttpClient::new(endpoint.clone()).unwrap();
+        let mut state = StructuredViewState::new("chat".into(), endpoint, http, None);
+        state.set_composer_text("draft 界");
+        state.scroll_offset = 7;
+        let (_, plugin_rx) = tokio::sync::mpsc::channel(1);
+        let (_, session_info_rx) = tokio::sync::mpsc::channel(1);
+        let view = EmbeddedView {
+            state,
+            toast_deadline: None,
+            plugin_rx,
+            session_info_rx,
+            active: false,
+        };
+        let mut popup = ChatPopup::new("plugin.test.open".into(), "Chat".into(), None, view);
+        for (width, height) in [(80, 24), (120, 40), (40, 10)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| popup.render(frame, &Theme::default()))
+                .unwrap();
+            let content: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(content.contains(if width < 80 {
+                "Resize to at least"
+            } else {
+                "Esc close"
+            }));
+        }
+        popup
+            .handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)))
+            .await
+            .unwrap();
+        assert!(!popup.visible);
+        popup.reopen();
+        assert!(popup.visible);
+        assert_eq!(popup.view.state.composer.lines().join("\n"), "draft 界");
+        assert_eq!(popup.view.state.scroll_offset, 7);
+        assert_eq!(popup.view.state.focus, super::super::input::Focus::Composer);
     }
 }

@@ -187,6 +187,109 @@ pub async fn plugin_commands() -> Json<serde_json::Value> {
     Json(json!({ "commands": commands }))
 }
 
+#[derive(Deserialize)]
+pub struct OpenChatQuery {
+    profile: Option<String>,
+}
+
+pub async fn open_plugin_chat(
+    State(state): State<std::sync::Arc<AppState>>,
+    Path(fqid): Path<String>,
+    Query(query): Query<OpenChatQuery>,
+) -> Response {
+    if state.read_only {
+        return super::read_only_response();
+    }
+    if let Some(response) = super::cityhall_block(&state) {
+        return response;
+    }
+    let profile = crate::session::config::effective_profile(&state.profile);
+    if query
+        .profile
+        .as_ref()
+        .is_some_and(|requested| requested != &profile)
+    {
+        return error_response(
+            StatusCode::CONFLICT,
+            "profile_mismatch",
+            format!(
+                "The daemon serves profile {}. Connect to a daemon serving the selected profile.",
+                profile
+            ),
+        );
+    }
+    let plugin_id = plugin::registry().active().find_map(|plugin| {
+        plugin
+            .manifest
+            .commands
+            .iter()
+            .any(|command| {
+                fqid == format!("plugin.{}.{}", plugin.id(), command.id)
+                    && matches!(command.action, Some(aoe_plugin_api::ClientAction::OpenChat))
+            })
+            .then(|| plugin.id().to_string())
+    });
+    let Some(plugin_id) = plugin_id else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "unknown_command",
+            "No active chat command".into(),
+        );
+    };
+    let Some(host) = state.plugin_host.as_ref() else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no_host",
+            "Start the daemon with aoe serve".into(),
+        );
+    };
+    let config = crate::session::resolve_config_or_warn(&profile);
+    let params = json!({
+        "command": fqid,
+        "profile": profile,
+        "agent_id": config.acp.resolved_default_agent(),
+        "sandbox": config.sandbox.enabled_by_default,
+    });
+    let result = match host
+        .request_worker(&plugin_id, "plugin.chat.open", params)
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "chat_unavailable",
+                error.to_string(),
+            )
+        }
+    };
+    let instances = state.instances.read().await;
+    let session = instances.iter().find(|session| {
+        Some(session.id.as_str()) == result["session_id"].as_str()
+            && session.created_by_plugin.as_deref() == Some(&plugin_id)
+            && session.effective_profile() == profile
+            && session.is_structured()
+            && !session.is_trashed()
+    });
+    match session {
+        Some(session)
+            if plugin::registry()
+                .get(&plugin_id)
+                .is_some_and(|plugin| plugin.active()) =>
+        {
+            Json(super::sessions::SessionResponse::from_instance(
+                session, false,
+            ))
+            .into_response()
+        }
+        _ => error_response(
+            StatusCode::CONFLICT,
+            "chat_unavailable",
+            "Plugin returned an unavailable or unowned chat session".into(),
+        ),
+    }
+}
+
 /// `GET /api/plugins/ui-state`: the plugin host's aggregated UI-state snapshot
 /// (the slots workers have pushed, plus the notification ring). Empty when no
 /// host is running (read-only mode). The

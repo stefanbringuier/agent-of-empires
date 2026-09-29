@@ -327,7 +327,45 @@ export function fetchPlugins(): Promise<PluginListResponse | null> {
 
 /** A command's client-executed action (`api_version >= 6`). `open-ui-link` opens
  *  the `href` from the plugin's own per-session UI-state entry at `(slot, id)`. */
-export type PluginClientAction = { kind: "open-ui-link"; slot: PluginUiSlot; id: string };
+export type PluginClientAction = { kind: "open-ui-link"; slot: PluginUiSlot; id: string } | { kind: "open-chat" };
+
+export async function openPluginChat(fqid: string): Promise<SessionResponse> {
+  const res = await fetch(`/api/plugins/commands/${encodeURIComponent(fqid)}/chat`, { method: "POST" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function fetchMessageTargets(sourceSessionId: string): Promise<SessionResponse[]> {
+  const res = await fetch(`/api/sessions/message-targets?source_session_id=${encodeURIComponent(sourceSessionId)}`);
+  if (!res.ok) throw new Error(await res.text());
+  return ((await res.json()) as SessionsEnvelope).sessions;
+}
+
+export interface SessionMessageResult {
+  status: "sent" | "steered" | "queued" | "unknown" | "error";
+  message?: string;
+}
+
+export async function sendSessionMessage(
+  sourceSessionId: string,
+  targetSessionId: string,
+  text: string,
+): Promise<SessionMessageResult> {
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(targetSessionId)}/message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_session_id: sourceSessionId, text }),
+    });
+    if (!res.ok) return { status: res.status >= 500 ? "unknown" : "error", message: await res.text() };
+    const result = (await res.json()) as SessionMessageResult;
+    if (!["sent", "steered", "queued", "unknown", "error"].includes(result.status))
+      throw new Error("Missing acknowledgment");
+    return result;
+  } catch {
+    return { status: "unknown", message: "Acknowledgment lost. Check the recipient before sending again." };
+  }
+}
 
 /** One active plugin command (`GET /api/plugins/commands`), normalized for the
  *  command palette and keymap. */

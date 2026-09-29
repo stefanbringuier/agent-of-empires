@@ -299,7 +299,10 @@ pub(super) fn wrap_command_ignore_suspend(cmd: &str, working_dir: &str) -> Strin
     let user = crate::session::environment::user_shell();
     let posix = crate::session::environment::user_posix_shell();
     let cd = crate::session::environment::shell_escape(working_dir);
-    let script = format!("cd {cd} || exit 1\nstty susp undef\nexec env {cmd}");
+    // `cmd` begins with environment assignments. Avoid resolving a
+    // profile-defined `env` function or wrapper, which can return successfully
+    // without invoking the agent and leave a status-0 dead pane.
+    let script = format!("cd {cd} || exit 1\nstty susp undef\nexec /usr/bin/env {cmd}");
     shell_stdin_command(&posix, user == posix, &script, "AOE_LAUNCH_BODY")
 }
 

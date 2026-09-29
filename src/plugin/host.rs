@@ -28,7 +28,10 @@ const MAX_RESPAWNS: usize = 3;
 const RESPAWN_WINDOW: Duration = Duration::from_secs(60);
 const REAP_GRACE: Duration = Duration::from_secs(2);
 
+type WorkerReplies = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>>;
+
 struct RunningWorker {
+    replies: WorkerReplies,
     /// Gates writes from an aborted supervisor that has not yielded yet, which
     /// could otherwise mutate its replacement's slot.
     supervisor_id: u64,
@@ -88,6 +91,10 @@ impl PluginHost {
             profile,
             EVENT_RETENTION_PER_TOPIC,
         )?;
+        let api = match session_rpc.as_ref() {
+            Some(deps) => api.with_event_store(deps.session_service.acp_event_store.clone()),
+            None => api,
+        };
         Ok(Arc::new(Self {
             api: Arc::new(api),
             sandbox: Arc::new(NoSandbox),
@@ -146,6 +153,63 @@ impl PluginHost {
             Some(tx) => tx.send(line).is_ok(),
             None => false,
         }
+    }
+
+    pub async fn request_worker(
+        &self,
+        plugin_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        let (inbound, replies) = {
+            let table = self.state.lock().await;
+            let worker = table
+                .running
+                .get(plugin_id)
+                .context("Plugin worker is not running")?;
+            (
+                worker
+                    .inbound
+                    .clone()
+                    .context("Plugin worker is starting")?,
+                worker.replies.clone(),
+            )
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut pending = replies.lock().await;
+            pending.retain(|_, sender| !sender.is_closed());
+            anyhow::ensure!(pending.len() < 8, "Too many pending plugin requests");
+            pending.insert(id.clone(), tx);
+        }
+        let line = serde_json::json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params})
+            .to_string()
+            + "\n";
+        let result = if inbound.send(line).is_err() {
+            Err(anyhow::anyhow!("Plugin worker disconnected"))
+        } else {
+            match tokio::time::timeout(Duration::from_secs(60), rx).await {
+                Ok(Ok(reply)) => {
+                    if let Some(error) = reply.get("error") {
+                        Err(anyhow::anyhow!(
+                            "{}",
+                            error["message"].as_str().unwrap_or("Plugin request failed")
+                        ))
+                    } else {
+                        reply
+                            .get("result")
+                            .cloned()
+                            .context("Plugin returned no result")
+                    }
+                }
+                _ => Err(anyhow::anyhow!(
+                    "Plugin response unavailable; reopening will recover the saved session"
+                )),
+            }
+        };
+        replies.lock().await.remove(&id);
+        result
     }
 
     /// Emit `plugin.settings.changed` to each plugin whose settings a write
@@ -264,6 +328,9 @@ impl PluginHost {
         };
 
         self.teardown_workers(to_teardown).await;
+        if let Some(deps) = self.session_rpc.as_ref() {
+            deps.session_service.stop_inactive_plugin_sessions().await;
+        }
     }
 
     /// Insert a placeholder entry and spawn its supervisor under the held table
@@ -283,6 +350,7 @@ impl PluginHost {
         table.running.insert(
             plugin_id,
             RunningWorker {
+                replies: Arc::new(Mutex::new(HashMap::new())),
                 supervisor_id,
                 pid: 0,
                 task,
@@ -300,6 +368,7 @@ impl PluginHost {
     async fn teardown_workers(&self, workers: Vec<(String, RunningWorker)>) {
         futures_util::future::join_all(workers.into_iter().map(|(plugin_id, w)| async move {
             w.task.abort();
+            w.replies.lock().await.clear();
             if let Some(generation) = w.ui_generation {
                 self.api.clear_ui(&plugin_id, generation);
             }
@@ -532,12 +601,21 @@ impl PluginHost {
             ui_contributions,
             ui_generation,
         };
+        let replies = {
+            let table = self.state.lock().await;
+            table
+                .running
+                .get(plugin_id)
+                .filter(|worker| worker.supervisor_id == supervisor_id)
+                .map(|worker| worker.replies.clone())
+        };
         serve_connection(
             &self.api,
             &ctx,
             stdout,
             inbound_tx,
             self.session_rpc.as_ref(),
+            replies.as_ref(),
         )
         .await;
         // Serving ended; stop accepting host-initiated pushes and tear down the
@@ -553,6 +631,9 @@ impl PluginHost {
             }
         }
         writer.abort();
+        if let Some(replies) = replies {
+            replies.lock().await.clear();
+        }
 
         // The loop returned: the worker closed its stdout (exited or crashed).
         // Drop this generation's UI state (a respawn repopulates it); guarded by
@@ -615,6 +696,7 @@ async fn serve_connection(
     stdout: tokio::process::ChildStdout,
     stdin: mpsc::UnboundedSender<String>,
     session_rpc: Option<&Arc<crate::plugin::session_api::SessionRpcDeps>>,
+    replies: Option<&WorkerReplies>,
 ) {
     let mut lines = BufReader::new(stdout).lines();
     // Unbounded line read: per the honest model (D8) the worker is cooperative,
@@ -629,6 +711,16 @@ async fn serve_connection(
                 return;
             }
         };
+        if let Ok(reply) = serde_json::from_str::<Value>(&line) {
+            if reply.get("method").is_none() && reply["jsonrpc"] == "2.0" {
+                if let (Some(replies), Some(id)) = (replies, reply["id"].as_str()) {
+                    if let Some(tx) = replies.lock().await.remove(id) {
+                        let _ = tx.send(reply);
+                    }
+                }
+                continue;
+            }
+        }
         let request = match protocol::parse_request(&line) {
             Ok(Some(req)) => req,
             Ok(None) => continue, // blank line
@@ -879,7 +971,7 @@ process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:1,method:"session.meta.set
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
 
-        serve_connection(&api, &ctx, stdout, stdin_writer(stdin), None).await;
+        serve_connection(&api, &ctx, stdout, stdin_writer(stdin), None, None).await;
         let _ = child.wait().await;
 
         // Read the event the worker published: it carries the FORBIDDEN code the
@@ -953,7 +1045,7 @@ rl.on('line', (line) => {
         )
         .unwrap();
 
-        serve_connection(&api, &ctx, stdout, tx, None).await;
+        serve_connection(&api, &ctx, stdout, tx, None, None).await;
         let _ = child.wait().await;
 
         let got = dispatch(

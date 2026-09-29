@@ -1344,6 +1344,18 @@ pub async fn acp_prompt(
     Path(id): Path<String>,
     req: Result<Json<PromptRequest>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
+    if let Some(response) = read_only_block(&state) {
+        return response;
+    }
+    acp_prompt_inner(state, id, req, None).await
+}
+
+pub(super) async fn acp_prompt_inner(
+    state: Arc<AppState>,
+    id: String,
+    req: Result<Json<PromptRequest>, axum::extract::rejection::JsonRejection>,
+    source_session_id: Option<&str>,
+) -> axum::response::Response {
     if let Some(resp) = read_only_block(&state) {
         return resp;
     }
@@ -1351,7 +1363,11 @@ pub async fn acp_prompt(
         Ok(j) => j,
         Err(rej) => return rej.into_response(),
     };
-    let woke_idle_dormant = touch_on_prompt_and_wake_if_sunk(&state, &id).await;
+    let woke_idle_dormant = if source_session_id.is_none() {
+        touch_on_prompt_and_wake_if_sunk(&state, &id).await
+    } else {
+        false
+    };
     {
         let instances = state.instances.read().await;
         if !instances.iter().any(|i| i.id == id) {
@@ -1382,6 +1398,24 @@ pub async fn acp_prompt(
     else {
         return (StatusCode::NOT_FOUND, "session not found").into_response();
     };
+    if let Some(source) = source_session_id {
+        let instances = state.instances.read().await;
+        if let Err(message) =
+            super::sessions::authorize_message(&state.profile, &instances, source, &id)
+        {
+            return (StatusCode::CONFLICT, message).into_response();
+        }
+        if !instances
+            .iter()
+            .any(|instance| instance.id == id && instance.is_structured())
+        {
+            return (
+                StatusCode::CONFLICT,
+                "Recipient view changed; select it again",
+            )
+                .into_response();
+        }
+    }
     // A fresh user prompt supersedes any queued rate-limit resume
     // continuation, so drop it before sending: otherwise the reconciler could
     // later replay the older interrupted prompt after this newer one (#3028).
@@ -1467,6 +1501,11 @@ pub async fn acp_prompt(
             format!("worker_not_ready: {e}"),
         )
             .into_response(),
+        Err(SendTurnError::WorkerNotReady) if source_session_id.is_some() => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Delivery uncertain; verify recipient before retrying",
+        )
+            .into_response(),
         Err(SendTurnError::WorkerNotReady) => {
             (StatusCode::SERVICE_UNAVAILABLE, "worker_not_ready").into_response()
         }
@@ -1478,6 +1517,11 @@ pub async fn acp_prompt(
         Err(SendTurnError::ModeApplication(e)) => {
             supervisor_error_response("mode application failed", &e)
         }
+        Err(SendTurnError::Send(e)) if source_session_id.is_some() => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Delivery uncertain: {e}; verify recipient before retrying"),
+        )
+            .into_response(),
         Err(SendTurnError::Send(e)) => supervisor_error_response("prompt failed", &e),
     }
 }

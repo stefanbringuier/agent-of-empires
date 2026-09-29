@@ -1,6 +1,29 @@
 use aoe_plugin_api::{ManifestError, PluginManifest, RuntimeSpec, SettingType, UiSlot};
 
 #[test]
+fn chat_actions_require_the_supported_schema_worker_and_session_grants() {
+    let source = include_str!("../../plugins/councilor/aoe-plugin.toml");
+    PluginManifest::from_toml_str(source).unwrap();
+    for capability in [
+        "runtime.worker",
+        "session.read",
+        "session.create",
+        "session.prompt",
+    ] {
+        let missing = source.replace(&format!("\"{capability}\""), "\"acp.capabilities.probe\"");
+        assert!(
+            PluginManifest::from_toml_str(&missing).is_err(),
+            "{capability}"
+        );
+    }
+    assert!(
+        PluginManifest::from_toml_str(&source.replace("api_version = 14", "api_version = 13"))
+            .is_err()
+    );
+    assert!(PluginManifest::from_toml_str(source.split("[runtime]").next().unwrap()).is_err());
+}
+
+#[test]
 fn minimal_manifest_parses_and_round_trips() {
     let toml = r#"
 id = "aoe.web"

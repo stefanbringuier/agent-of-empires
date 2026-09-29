@@ -297,6 +297,7 @@ pub async fn reconcile_acp_workers(
     // Sessions holding undelivered prompts come out of the same acquisition:
     // a queued prompt is a user turn waiting on a worker, so it releases the
     // redelivery-cap park below (#3688).
+    state.session_service.stop_inactive_plugin_sessions().await;
     let (raw_targets, with_queued_prompts): (Vec<RawTargetTuple>, HashSet<String>) = {
         let instances = state.instances.read().await;
         let targets = instances
@@ -307,6 +308,7 @@ pub async fn reconcile_acp_workers(
                     && !i.is_snoozed()
                     && !i.is_trashed()
                     && !i.is_idle_dormant()
+                    && crate::plugin::session_owner_active(i)
             })
             .map(|i| {
                 (
@@ -1709,6 +1711,7 @@ async fn drain_pending_initial_turns(state: &Arc<AppState>) {
             .iter()
             .filter(|i| {
                 i.pending_initial_turn.is_some()
+                    && crate::plugin::session_owner_active(i)
                     && i.is_structured()
                     && !i.is_archived()
                     && !i.is_snoozed()
@@ -1753,6 +1756,7 @@ async fn drain_queued_prompts(state: &Arc<AppState>) {
             .iter()
             .filter(|i| {
                 !i.queued_prompts.is_empty()
+                    && crate::plugin::session_owner_active(i)
                     && i.status == crate::session::Status::Idle
                     && i.is_structured()
                     && !i.is_archived()
@@ -1939,6 +1943,7 @@ async fn resume_target_for_session(
             && !i.is_snoozed()
             && !i.is_trashed()
             && !i.is_idle_dormant()
+            && crate::plugin::session_owner_active(i)
     })?;
     Some(ResumeTarget {
         id: inst.id.clone(),
