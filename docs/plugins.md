@@ -54,7 +54,7 @@ first-party plugins land as each piece is verified.
 Councilor is an optional plugin in this source tree. Install it with
 `aoe plugin install ./plugins/councilor`, grant its declared capabilities,
 and run `aoe serve`. Open **Councilor** in the web dashboard or press its
-configurable `Ctrl+Y` binding from the TUI home screen. The first open creates
+configurable `F6` binding from the TUI home screen. The first open creates
 one saved scratch conversation per profile using the configured ACP agent;
 plugin settings provide agent/model overrides for creation, and the web chat
 retains its normal selectors. A missing adapter must be configured first.

@@ -4,6 +4,7 @@ use std::io::{self, BufRead, Write};
 use serde_json::{json, Value};
 
 const BOOTSTRAP: &str = include_str!("../bootstrap-v1.md");
+const CREATE_KEY_VERSION: &str = "v2";
 
 fn error(message: impl ToString) -> Value {
     json!({"code": -32603, "message": message.to_string()})
@@ -69,8 +70,15 @@ impl<R: BufRead, W: Write> Worker<R, W> {
         let saved = self.call("plugin.storage.get", json!({"key": key}))?["value"].clone();
         if let Some(session_id) = saved.as_str() {
             match self.call("sessions.details", json!({"session_id": session_id})) {
-                Ok(_) => return Ok(json!({"session_id": session_id})),
-                Err(err) if err["data"]["kind"] == "session_not_found" => {}
+                Ok(session) if session["status"] != "Error" => {
+                    return Ok(json!({"session_id": session_id}));
+                }
+                Ok(_) => {}
+                Err(err)
+                    if matches!(
+                        err["data"]["kind"].as_str(),
+                        Some("session_not_found" | "session_in_trash" | "session_trashed")
+                    ) => {}
                 Err(err) => return Err(err),
             }
         } else if !saved.is_null() {
@@ -99,7 +107,7 @@ impl<R: BufRead, W: Write> Worker<R, W> {
                 "sandbox": params["sandbox"].as_bool().unwrap_or(false),
                 "title": "Councilor",
                 "initial_turn": {"text": BOOTSTRAP},
-                "idempotency_key": format!("councilor:{profile}"),
+                "idempotency_key": format!("councilor:{CREATE_KEY_VERSION}:{profile}"),
             }),
         )?;
         let session_id = created["session_id"]
@@ -166,7 +174,7 @@ mod tests {
         for response in [
             json!({"result": {"id": "saved"}}),
             json!({"error": {"code": -32603, "message": "storage unavailable"}}),
-            json!({"error": {"code": -32005, "data": {"kind": "session_trashed"}}}),
+            json!({"error": {"code": -32005, "data": {"kind": "worker_busy"}}}),
         ] {
             let mut reply = response;
             reply["id"] = json!("councilor-2");
@@ -254,11 +262,59 @@ mod tests {
             let params = &creates[0]["params"];
             assert_eq!(params["agent_id"], "claude");
             assert_eq!(params["sandbox"], true);
-            assert_eq!(params["idempotency_key"], "councilor:default");
+            assert_eq!(params["idempotency_key"], "councilor:v2:default");
             assert_eq!(params["initial_turn"]["text"], BOOTSTRAP);
             assert!(params.get("project_path").is_none());
             assert!(params.get("mode_id").is_none());
             assert_eq!(calls.last().unwrap()["params"]["expected"], previous);
         }
+    }
+
+    #[test]
+    fn replaces_a_saved_failed_session() {
+        let replies = [
+            json!({"result": {"value": "failed"}}),
+            json!({"result": {"id": "failed", "status": "Error"}}),
+            json!({"result": {"value": null}}),
+            json!({"result": {"value": null}}),
+            json!({"result": {"agents": [{"id": "claude"}]}}),
+            json!({"result": {"session_id": "replacement", "created": true}}),
+            json!({"result": {"swapped": true, "current": "replacement"}}),
+        ];
+        let input: String = replies
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut reply)| {
+                reply["id"] = json!(format!("councilor-{}", index + 1));
+                format!("{reply}\n")
+            })
+            .collect();
+        let mut worker = Worker {
+            input: io::Cursor::new(input),
+            output: Vec::new(),
+            pending: VecDeque::new(),
+            sequence: 0,
+        };
+
+        let result = worker
+            .open(&json!({"profile": "default", "agent_id": "claude"}))
+            .unwrap();
+        assert_eq!(result["session_id"], "replacement");
+
+        let calls: Vec<Value> = String::from_utf8(worker.output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let create = calls
+            .iter()
+            .find(|call| call["method"] == "sessions.create")
+            .unwrap();
+        assert_eq!(create["params"]["idempotency_key"], "councilor:v2:default");
+        let save = calls
+            .iter()
+            .find(|call| call["method"] == "plugin.storage.cas")
+            .unwrap();
+        assert_eq!(save["params"]["expected"], "failed");
     }
 }
